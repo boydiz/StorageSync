@@ -12,7 +12,7 @@
       // Prevent flash of wrong theme
       (function() {
         const dark = localStorage.getItem('dark-mode');
-        if (dark === 'true') document.documentElement.classList.add('dark');
+        if (dark !== 'false') document.documentElement.classList.add('dark');
       })();
     </script>
   </head>
