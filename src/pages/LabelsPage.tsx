@@ -1,18 +1,18 @@
-import { useState, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { Printer, Tag, X } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { useBins } from '@/hooks/useBins'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/controls'
 import { formatBinNumber } from '@/lib/utils'
+import ReactDOMServer from 'react-dom/server'
 
 const LAYOUTS = [1, 2, 3, 4, 5, 6] as const
 type Layout = typeof LAYOUTS[number]
 
-// US Letter with 0.5in margins = 7.5 x 10 usable inches
-const PAGE_W = 7.5
-const PAGE_H = 10
-const GAP = 0.12
+const PAGE_W = 7.5   // usable inches (8.5 - 1in margins)
+const PAGE_H = 10    // usable inches (11 - 1in margins)
+const GAP    = 0.12  // gap between labels in inches
 
 const GRID: Record<Layout, { cols: number; rows: number }> = {
   1: { cols: 1, rows: 1 },
@@ -31,90 +31,56 @@ function getLabelSize(layout: Layout) {
 }
 
 interface BinData {
-  id: string
-  binNumber: number
-  name: string
-  location: string
-  description: string
-  color: string
+  id: string; binNumber: number; name: string
+  location: string; description: string; color: string
+}
+
+const SIZES: Record<Layout, { name: string; num: string; desc: string; stripe: string; pad: string }> = {
+  1: { name: '3.2rem',  num: '2.0rem',  desc: '1rem',    stripe: '20px', pad: '1rem'   },
+  2: { name: '2.4rem',  num: '1.6rem',  desc: '0.85rem', stripe: '16px', pad: '0.85rem'},
+  3: { name: '1.6rem',  num: '1.1rem',  desc: '0.75rem', stripe: '12px', pad: '0.65rem'},
+  4: { name: '1.7rem',  num: '1.2rem',  desc: '0.7rem',  stripe: '12px', pad: '0.55rem'},
+  5: { name: '1.2rem',  num: '0.9rem',  desc: '0.6rem',  stripe: '10px', pad: '0.45rem'},
+  6: { name: '1.1rem',  num: '0.85rem', desc: '0.55rem', stripe: '8px',  pad: '0.4rem' },
 }
 
 function LabelCard({ bin, layout }: { bin: BinData; layout: Layout }) {
   const qrUrl = `${window.location.origin}/bin/${bin.id}`
   const { w, h } = getLabelSize(layout)
+  const sz = SIZES[layout]
   const isLayout3 = layout === 3
-
-  // Font sizes — keep large and readable
-  const nameSize   = layout === 1 ? '2.8rem' : layout === 2 ? '2rem'  : layout === 3 ? '1.6rem' : layout === 4 ? '1.4rem' : '1.1rem'
-  const numSize    = layout === 1 ? '1.1rem' : layout === 2 ? '0.9rem': layout === 3 ? '0.85rem': layout === 4 ? '0.8rem' : '0.7rem'
-  const descSize   = layout === 1 ? '0.9rem' : layout === 2 ? '0.75rem':layout === 3 ? '0.7rem' : layout === 4 ? '0.65rem': '0.6rem'
-  const stripeH    = layout <= 2  ? '14px'   : layout === 3 ? '10px'  : '8px'
-
-  // QR size in pixels (96dpi)
-  const qrIn = layout === 1 ? h * 0.62 : layout === 2 ? h * 0.55 : layout === 3 ? h * 0.72 : layout === 4 ? h * 0.52 : h * 0.46
+  const qrIn = layout === 1 ? h*0.60 : layout === 2 ? h*0.52 : layout === 3 ? h*0.74 : layout === 4 ? h*0.50 : h*0.44
   const qrPx = Math.round(qrIn * 96)
 
-  const pad = layout === 1 ? '1rem' : layout <= 3 ? '0.7rem' : '0.45rem'
+  const textBlock = (
+    <>
+      <div style={{ fontFamily:'monospace', fontSize:sz.num, color:'#374151', fontWeight:700, lineHeight:1 }}>
+        #{formatBinNumber(bin.binNumber)}
+      </div>
+      <div style={{ fontWeight:800, fontSize:sz.name, color:'#111827', lineHeight:1.1, wordBreak:'break-word', marginTop:'3px' }}>
+        {bin.name}
+      </div>
+      {bin.location && <div style={{ fontSize:sz.desc, color:'#6b7280', marginTop:'4px' }}>{bin.location}</div>}
+      {bin.description && (
+        <div style={{ fontSize:sz.desc, color:'#9ca3af', marginTop:'3px', overflow:'hidden', display:'-webkit-box', WebkitLineClamp: isLayout3 ? 4 : 2, WebkitBoxOrient:'vertical' as const }}>
+          {bin.description}
+        </div>
+      )}
+    </>
+  )
 
   return (
-    <div style={{
-      width: `${w}in`,
-      height: `${h}in`,
-      border: '1.5px solid #d1d5db',
-      borderRadius: '10px',
-      overflow: 'hidden',
-      backgroundColor: 'white',
-      display: 'flex',
-      flexDirection: 'column',
-      pageBreakInside: 'avoid',
-      boxSizing: 'border-box',
-    }}>
-      {/* Color stripe */}
-      <div style={{ height: stripeH, backgroundColor: bin.color, flexShrink: 0, width: '100%' }} />
-
-      {/* Layout 3: horizontal — text left, QR right */}
+    <div style={{ width:`${w}in`, height:`${h}in`, border:'1.5px solid #d1d5db', borderRadius:'10px', overflow:'hidden', backgroundColor:'white', display:'flex', flexDirection:'column', pageBreakInside:'avoid', boxSizing:'border-box' }}>
+      <div style={{ height:sz.stripe, backgroundColor:bin.color, flexShrink:0 }} />
       {isLayout3 ? (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'row', padding: pad, gap: '0.5rem', overflow: 'hidden', alignItems: 'center' }}>
-          <div style={{ flex: 1, overflow: 'hidden' }}>
-            <div style={{ fontFamily: 'monospace', fontSize: numSize, color: '#6b7280', fontWeight: 600 }}>
-              #{formatBinNumber(bin.binNumber)}
-            </div>
-            <div style={{ fontWeight: '800', fontSize: nameSize, color: '#111827', lineHeight: 1.15, wordBreak: 'break-word' }}>
-              {bin.name}
-            </div>
-            {bin.location && (
-              <div style={{ fontSize: descSize, color: '#6b7280', marginTop: '4px' }}>{bin.location}</div>
-            )}
-            {bin.description && (
-              <div style={{ fontSize: descSize, color: '#9ca3af', marginTop: '3px', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical' as const }}>
-                {bin.description}
-              </div>
-            )}
-          </div>
-          <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>
-            <QRCodeSVG value={qrUrl} size={qrPx} />
-          </div>
+        <div style={{ flex:1, display:'flex', flexDirection:'row', padding:sz.pad, gap:'0.6rem', overflow:'hidden', alignItems:'center' }}>
+          <div style={{ flex:1, overflow:'hidden' }}>{textBlock}</div>
+          <div style={{ flexShrink:0 }}><QRCodeSVG value={qrUrl} size={qrPx} /></div>
         </div>
       ) : (
-        /* All other layouts: vertical — text top, QR bottom */
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: pad, gap: '6px', overflow: 'hidden' }}>
-          <div style={{ flexShrink: 0 }}>
-            <div style={{ fontFamily: 'monospace', fontSize: numSize, color: '#6b7280', fontWeight: 600 }}>
-              #{formatBinNumber(bin.binNumber)}
-            </div>
-            <div style={{ fontWeight: '800', fontSize: nameSize, color: '#111827', lineHeight: 1.15, wordBreak: 'break-word' }}>
-              {bin.name}
-            </div>
-            {bin.location && (
-              <div style={{ fontSize: descSize, color: '#6b7280', marginTop: '3px' }}>{bin.location}</div>
-            )}
-            {bin.description && layout <= 4 && (
-              <div style={{ fontSize: descSize, color: '#9ca3af', marginTop: '2px', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' as const }}>
-                {bin.description}
-              </div>
-            )}
-          </div>
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ flex:1, display:'flex', flexDirection:'column', padding:sz.pad, gap:'4px', overflow:'hidden' }}>
+          <div style={{ flexShrink:0 }}>{textBlock}</div>
+          <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center' }}>
             <QRCodeSVG value={qrUrl} size={qrPx} />
           </div>
         </div>
@@ -123,52 +89,66 @@ function LabelCard({ bin, layout }: { bin: BinData; layout: Layout }) {
   )
 }
 
-// Inject print styles once into <head>
-function PrintStyles({ layout }: { layout: Layout }) {
-  const { cols, rows, perPage, w, h } = getLabelSize(layout)
-  useEffect(() => {
-    const id = 'storagesync-print-styles'
-    let el = document.getElementById(id) as HTMLStyleElement | null
-    if (!el) {
-      el = document.createElement('style')
-      el.id = id
-      document.head.appendChild(el)
-    }
-    el.textContent = `
-      @media print {
-        @page { size: letter portrait; margin: 0.5in; }
-        body > * { display: none !important; }
-        #ss-print-root { display: block !important; position: fixed; top: 0; left: 0; width: 100%; }
-        .ss-print-page {
-          display: grid !important;
-          grid-template-columns: repeat(${cols}, ${w}in);
-          grid-template-rows: repeat(${rows}, ${h}in);
-          gap: ${GAP}in;
-          page-break-after: always;
-          width: ${PAGE_W}in;
-          height: ${PAGE_H}in;
-        }
-        .ss-print-page:last-child { page-break-after: auto; }
-      }
-    `
-    return () => { if (el) el.textContent = '' }
-  }, [cols, rows, perPage, w, h])
-  return null
+// Build a static HTML string for the print window (works on desktop + mobile PDF)
+function buildPrintHtml(pages: BinData[][], layout: Layout): string {
+  const { cols, rows, w, h } = getLabelSize(layout)
+
+  const pagesHtml = pages.map((pageBins, pi) => {
+    const labelsHtml = pageBins.map(bin => {
+      const qrUrl = `${window.location.origin}/bin/${bin.id}`
+      const sz = SIZES[layout]
+      const isLayout3 = layout === 3
+      const qrIn = layout === 1 ? h*0.60 : layout === 2 ? h*0.52 : layout === 3 ? h*0.74 : layout === 4 ? h*0.50 : h*0.44
+      const qrPx = Math.round(qrIn * 96)
+      const qrSvg = ReactDOMServer.renderToStaticMarkup(<QRCodeSVG value={qrUrl} size={qrPx} />)
+      const numStr = String(bin.binNumber).padStart(3, '0')
+
+      const textHtml = `
+        <div style="font-family:monospace;font-size:${sz.num};color:#374151;font-weight:700;line-height:1">#${numStr}</div>
+        <div style="font-weight:800;font-size:${sz.name};color:#111827;line-height:1.1;word-break:break-word;margin-top:3px">${bin.name}</div>
+        ${bin.location ? `<div style="font-size:${sz.desc};color:#6b7280;margin-top:4px">${bin.location}</div>` : ''}
+        ${bin.description ? `<div style="font-size:${sz.desc};color:#9ca3af;margin-top:3px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:${isLayout3?4:2};-webkit-box-orient:vertical">${bin.description}</div>` : ''}
+      `
+      const innerHtml = isLayout3
+        ? `<div style="flex:1;overflow:hidden">${textHtml}</div><div style="flex-shrink:0">${qrSvg}</div>`
+        : `<div style="flex-shrink:0">${textHtml}</div><div style="flex:1;display:flex;align-items:center;justify-content:center">${qrSvg}</div>`
+
+      return `<div style="width:${w}in;height:${h}in;border:1.5px solid #d1d5db;border-radius:10px;overflow:hidden;background:white;display:flex;flex-direction:column;page-break-inside:avoid;box-sizing:border-box;">
+        <div style="height:${sz.stripe};background:${bin.color};flex-shrink:0"></div>
+        <div style="flex:1;display:flex;flex-direction:${isLayout3?'row':'column'};padding:${sz.pad};gap:${isLayout3?'0.6rem':'4px'};overflow:hidden;${isLayout3?'align-items:center':''}">
+          ${innerHtml}
+        </div>
+      </div>`
+    }).join('')
+
+    return `<div style="display:grid;grid-template-columns:repeat(${cols},${w}in);grid-template-rows:repeat(${rows},${h}in);gap:${GAP}in;width:${PAGE_W}in;height:${PAGE_H}in;${pi < pages.length-1 ? 'page-break-after:always' : ''}">
+      ${labelsHtml}
+    </div>`
+  }).join('')
+
+  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>StorageSync Labels</title>
+    <style>*{margin:0;padding:0;box-sizing:border-box}body{background:white}
+    @page{size:letter portrait;margin:0.5in}
+    @media print{body{margin:0}}</style>
+  </head><body>
+    ${pagesHtml}
+    <script>window.onload=function(){setTimeout(function(){window.print();},400)}<\/script>
+  </body></html>`
+}
+
+function isMobile() {
+  return /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent)
 }
 
 export default function LabelsPage() {
   const { bins } = useBins()
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [layout, setLayout] = useState<Layout>(2)
+  const [selected, setSelected]   = useState<Set<string>>(new Set())
+  const [layout, setLayout]       = useState<Layout>(2)
   const [showPreview, setShowPreview] = useState(false)
+  const [scale, setScale]         = useState(1)
+  const containerRef              = useRef<HTMLDivElement>(null)
 
-  const toggleBin = (id: string) => {
-    setSelected(prev => {
-      const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
-      return next
-    })
-  }
+  const toggleBin = (id: string) => setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
   const selectAll   = () => setSelected(new Set(bins.map(b => b.id)))
   const deselectAll = () => setSelected(new Set())
 
@@ -176,14 +156,41 @@ export default function LabelsPage() {
   const { cols, rows, perPage, w, h } = getLabelSize(layout)
 
   const pages: BinData[][] = []
-  for (let i = 0; i < selectedBins.length; i += perPage) {
-    pages.push(selectedBins.slice(i, i + perPage))
+  for (let i = 0; i < selectedBins.length; i += perPage) pages.push(selectedBins.slice(i, i + perPage))
+
+  // Scale page preview to fit available width with some padding
+  const calcScale = useCallback(() => {
+    const availW = window.innerWidth - 48  // 24px padding each side
+    const pageWpx = 8.5 * 96
+    setScale(Math.min(1, availW / pageWpx))
+  }, [])
+
+  useEffect(() => {
+    if (!showPreview) return
+    calcScale()
+    window.addEventListener('resize', calcScale)
+    return () => window.removeEventListener('resize', calcScale)
+  }, [showPreview, calcScale])
+
+  const handlePrint = () => {
+    const html = buildPrintHtml(pages, layout)
+    if (isMobile()) {
+      // On mobile: open in same tab as a blob URL — triggers system print/AirPrint/Save PDF
+      const blob = new Blob([html], { type: 'text/html' })
+      const url  = URL.createObjectURL(blob)
+      window.open(url, '_blank')
+    } else {
+      // Desktop: open new window, auto-print
+      const win = window.open('', '_blank', 'width=900,height=700')
+      if (win) { win.document.write(html); win.document.close() }
+    }
   }
+
+  // Height of a scaled page for correct spacing
+  const scaledPageH = 11 * 96 * scale
 
   return (
     <div className="p-4 md:p-8 max-w-3xl mx-auto animate-fade-in">
-      <PrintStyles layout={layout} />
-
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
@@ -191,7 +198,10 @@ export default function LabelsPage() {
           <p className="text-muted-foreground text-sm mt-1">Select bins to print labels</p>
         </div>
         <Button onClick={() => setShowPreview(true)} disabled={selected.size === 0}>
-          <Printer className="h-4 w-4" /> Preview & Print ({selected.size})
+          <Printer className="h-4 w-4" />
+          <span className="hidden sm:inline">Preview & Print</span>
+          <span className="sm:hidden">Print</span>
+          {' '}({selected.size})
         </Button>
       </div>
 
@@ -221,75 +231,58 @@ export default function LabelsPage() {
         </div>
       )}
 
-      {/* ── FULL-SCREEN PREVIEW MODAL ── */}
+      {/* FULL-SCREEN PREVIEW */}
       {showPreview && (
-        <div
-          className="no-print"
-          style={{ position: 'fixed', inset: 0, zIndex: 9999, backgroundColor: '#1a1a2e', display: 'flex', flexDirection: 'column' }}
-        >
+        <div style={{ position:'fixed', inset:0, zIndex:9999, backgroundColor:'#0f172a', display:'flex', flexDirection:'column' }}>
+
           {/* Toolbar */}
-          <div style={{ backgroundColor: '#0f0f1a', borderBottom: '1px solid #333', padding: '10px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '20px', flexWrap: 'wrap' }}>
-              <span style={{ color: 'white', fontWeight: 600, fontSize: '14px' }}>Print Preview</span>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ color: '#aaa', fontSize: '12px' }}>Labels per page:</span>
-                <div style={{ display: 'flex', gap: '4px' }}>
+          <div style={{ backgroundColor:'#020617', borderBottom:'1px solid #1e293b', padding:'10px 16px', display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0, gap:'8px', flexWrap:'wrap' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:'12px', flexWrap:'wrap' }}>
+              <span style={{ color:'white', fontWeight:700, fontSize:'13px' }}>Preview</span>
+              <div style={{ display:'flex', alignItems:'center', gap:'6px' }}>
+                <span style={{ color:'#64748b', fontSize:'11px' }}>Per page:</span>
+                <div style={{ display:'flex', gap:'3px' }}>
                   {LAYOUTS.map(l => (
-                    <button
-                      key={l}
-                      onClick={() => setLayout(l)}
-                      style={{
-                        width: '32px', height: '32px', borderRadius: '6px', border: 'none',
-                        cursor: 'pointer', fontSize: '13px', fontWeight: 600,
-                        backgroundColor: layout === l ? '#3b82f6' : '#2a2a3e',
-                        color: layout === l ? 'white' : '#aaa',
-                      }}
-                    >
+                    <button key={l} onClick={() => setLayout(l)} style={{ width:30, height:30, borderRadius:6, border:'none', cursor:'pointer', fontSize:12, fontWeight:700, backgroundColor: layout===l ? '#3b82f6' : '#1e293b', color: layout===l ? 'white' : '#64748b' }}>
                       {l}
                     </button>
                   ))}
                 </div>
               </div>
-              <span style={{ color: '#666', fontSize: '12px' }}>{pages.length} page{pages.length !== 1 ? 's' : ''} · {selectedBins.length} label{selectedBins.length !== 1 ? 's' : ''}</span>
+              <span style={{ color:'#334155', fontSize:'11px' }}>{pages.length}p · {selectedBins.length} labels</span>
             </div>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <button
-                onClick={() => window.print()}
-                style={{ display: 'flex', alignItems: 'center', gap: '6px', backgroundColor: '#3b82f6', color: 'white', border: 'none', borderRadius: '8px', padding: '8px 16px', cursor: 'pointer', fontWeight: 600, fontSize: '13px' }}
-              >
-                <Printer size={15} /> Print
+            <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
+              <button onClick={handlePrint} style={{ display:'flex', alignItems:'center', gap:'6px', backgroundColor:'#3b82f6', color:'white', border:'none', borderRadius:8, padding:'8px 16px', cursor:'pointer', fontWeight:700, fontSize:13 }}>
+                <Printer size={14} />
+                <span>{isMobile() ? 'Print / Save PDF' : 'Print'}</span>
               </button>
-              <button
-                onClick={() => setShowPreview(false)}
-                style={{ width: '34px', height: '34px', borderRadius: '8px', border: '1px solid #444', backgroundColor: 'transparent', color: '#aaa', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-              >
+              <button onClick={() => setShowPreview(false)} style={{ width:34, height:34, borderRadius:8, border:'1px solid #1e293b', backgroundColor:'transparent', color:'#64748b', cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}>
                 <X size={16} />
               </button>
             </div>
           </div>
 
-          {/* Page previews — scale to fit viewport */}
-          <div style={{ flex: 1, overflow: 'auto', padding: '32px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '32px' }}>
+          {/* Scrollable page previews */}
+          <div ref={containerRef} style={{ flex:1, overflowY:'auto', overflowX:'hidden', padding:'24px 24px', display:'flex', flexDirection:'column', alignItems:'center', gap:'24px' }}>
             {pages.map((pageBins, pageIdx) => (
-              <div key={pageIdx}>
-                <p style={{ color: '#666', fontSize: '11px', textAlign: 'center', marginBottom: '8px' }}>Page {pageIdx + 1} of {pages.length}</p>
-                {/* Scale the 8.5x11 page to fit the screen */}
-                <div style={{ transformOrigin: 'top center' }}>
-                  <div style={{
-                    width: '8.5in',
-                    height: '11in',
-                    backgroundColor: 'white',
-                    padding: '0.5in',
-                    boxSizing: 'border-box',
-                    boxShadow: '0 8px 40px rgba(0,0,0,0.5)',
-                    display: 'grid',
-                    gridTemplateColumns: `repeat(${cols}, ${w}in)`,
-                    gridTemplateRows: `repeat(${rows}, ${h}in)`,
-                    gap: `${GAP}in`,
-                  }}>
-                    {pageBins.map(bin => (
-                      <LabelCard key={bin.id} bin={bin} layout={layout} />
-                    ))}
+              <div key={pageIdx} style={{ width:'100%', display:'flex', flexDirection:'column', alignItems:'center' }}>
+                <p style={{ color:'#475569', fontSize:'11px', marginBottom:'8px' }}>Page {pageIdx + 1} of {pages.length}</p>
+                {/* Wrapper that reserves correct height after scaling */}
+                <div style={{ width: `${8.5 * 96 * scale}px`, height: `${scaledPageH}px`, position:'relative' }}>
+                  <div style={{ transformOrigin:'top left', transform:`scale(${scale})`, position:'absolute', top:0, left:0 }}>
+                    <div style={{
+                      width:'8.5in', height:'11in',
+                      backgroundColor:'white',
+                      padding:'0.5in',
+                      boxSizing:'border-box',
+                      boxShadow:'0 8px 40px rgba(0,0,0,0.5)',
+                      display:'grid',
+                      gridTemplateColumns:`repeat(${cols},${w}in)`,
+                      gridTemplateRows:`repeat(${rows},${h}in)`,
+                      gap:`${GAP}in`,
+                    }}>
+                      {pageBins.map(bin => <LabelCard key={bin.id} bin={bin} layout={layout} />)}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -297,17 +290,6 @@ export default function LabelsPage() {
           </div>
         </div>
       )}
-
-      {/* ── PRINT OUTPUT ── hidden on screen, injected for print ── */}
-      <div id="ss-print-root" style={{ display: 'none' }}>
-        {pages.map((pageBins, pageIdx) => (
-          <div key={pageIdx} className="ss-print-page">
-            {pageBins.map(bin => (
-              <LabelCard key={bin.id} bin={bin} layout={layout} />
-            ))}
-          </div>
-        ))}
-      </div>
     </div>
   )
 }
