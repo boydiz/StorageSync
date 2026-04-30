@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from '@/contexts/AuthContext'
 import { ToastProvider } from '@/components/ui/toast'
 import { AppLayout } from '@/components/layout/AppLayout'
 import AuthPage from '@/pages/AuthPage'
+import ResetPasswordPage from '@/pages/ResetPasswordPage'
 import Dashboard from '@/pages/Dashboard'
 import BinDetail from '@/pages/BinDetail'
 import BinForm from '@/pages/BinForm'
@@ -34,6 +35,7 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/auth" element={<AuthPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/items" element={<ProtectedRoute><ItemsPage /></ProtectedRoute>} />
       <Route path="/labels" element={<ProtectedRoute><LabelsPage /></ProtectedRoute>} />
