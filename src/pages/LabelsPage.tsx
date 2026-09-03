@@ -23,14 +23,23 @@ interface CutContourSettings {
 
 interface HomeSettings    { labelsPerPage: 1|2|3|4|5|6 }
 interface ThermalSettings { labelW: number; labelH: number; marginH: number; marginV: number }
+
+// Wide format: the label shape is locked to one of a few aspect ratios so it
+// can't be dragged into a weird sliver. Width comes from the roll math; height
+// is width x the shape's ratio.
+type WideShape = 'qr' | 'wide' | 'square'
+const WIDE_SHAPES: Record<WideShape, { label: string; ratio: number; hint: string }> = {
+  qr:     { label: 'QR-dominant', ratio: 1.30, hint: 'Tall — big number on top, large QR below' },
+  square: { label: 'Square',      ratio: 1.00, hint: 'Balanced — number + text over a large QR' },
+  wide:   { label: 'Wide',        ratio: 0.62, hint: 'Landscape — number + text left, QR right' },
+}
+
 interface WideFormatSettings {
   rollWidth: number
-  colsAcross: number   // user sets this
-  gap: number          // user sets this — label width auto-calculated
-  labelH: number
+  colsAcross: number
+  gap: number
+  shape: WideShape
   maxLength: number
-  // auto-calculated:
-  labelW: number
 }
 interface CustomSettings {
   pageW: number; pageH: number; cols: number; rows: number
@@ -323,10 +332,9 @@ function buildThermalPrint(bins:BinData[], lw:number, lh:number, mH:number, mV:n
   return printHtmlWrapper(body,`${lw}in ${lh}in`,'0',cut)
 }
 
-function buildWideFormatPrint(bins:BinData[], rollW:number, labelW:number, labelH:number, gap:number, maxLen:number, cut:CutContourSettings) {
+function buildWideFormatPrint(bins:BinData[], rollW:number, cols:number, labelW:number, labelH:number, gap:number, maxLen:number, cut:CutContourSettings) {
   const usable=rollW-0.5
-  const cols=Math.max(1,Math.floor((usable+gap)/(labelW+gap)))
-  const perStrip=cols*Math.floor((maxLen+gap)/(labelH+gap))
+  const perStrip=Math.max(1,cols*Math.floor((maxLen+gap)/(labelH+gap)))
   const pages:BinData[][]=[]
   for(let i=0;i<bins.length;i+=perStrip) pages.push(bins.slice(i,i+perStrip))
   const layout=pickLayout(labelW,labelH)
@@ -366,6 +374,53 @@ function NumInput({label,value,onChange,min=0.1,max=60,step=0.1,suffix='"'}:{
           onChange={e=>onChange(Math.max(min,Math.min(max,parseFloat(e.target.value)||min)))}
           className="h-8 text-sm w-24"/>
         <span className="text-xs text-muted-foreground">{suffix}</span>
+      </div>
+    </div>
+  )
+}
+
+// ─── Wide Format Diagram ──────────────────────────────────────────────────────
+// To-scale sketch of one row of labels across the roll, with the resulting
+// label size and an estimated QR scan distance.
+
+function WideFormatDiagram({rollWidth,cols,gap,labelW,labelH,overflow}:{
+  rollWidth:number;cols:number;gap:number;labelW:number;labelH:number;overflow:boolean
+}) {
+  const VW = 300
+  const scale = VW / rollWidth                       // px per inch
+  const startX = 0.25 * scale                        // 0.25" edge margin
+  const boxW = labelW * scale
+  const drawH = Math.max(28, Math.min(labelH * scale, 150))
+  const gapPx = gap * scale
+  const shown = Math.min(cols, 8)
+  const qrIn = labelMetrics(labelW, labelH, pickLayout(labelW, labelH)).qrIn
+  const qrPx = Math.max(0, Math.min(qrIn * scale, boxW - 8, drawH - 8))
+
+  return (
+    <div className="rounded-lg border border-border bg-muted/20 p-3">
+      <svg width={VW} height={drawH + 4} style={{display:'block',maxWidth:'100%',overflow:'visible'}}>
+        <rect x={0.5} y={0.5} width={VW-1} height={drawH+3} fill="none"
+          stroke="currentColor" strokeOpacity={0.25} strokeDasharray="3 3" className="text-muted-foreground"/>
+        {Array.from({length:shown}).map((_,i)=>{
+          const x = startX + i*(boxW+gapPx)
+          return (
+            <g key={i}>
+              <rect x={x} y={2} width={boxW} height={drawH} rx={3}
+                style={{fill:'hsl(var(--primary) / 0.10)',stroke:'hsl(var(--primary) / 0.55)'}}/>
+              <rect x={x + (boxW-qrPx)/2} y={2 + (drawH-qrPx)/2} width={qrPx} height={qrPx} rx={2}
+                style={{fill:'hsl(var(--foreground) / 0.18)'}}/>
+            </g>
+          )
+        })}
+        {cols>shown && (
+          <text x={VW-4} y={drawH/2} textAnchor="end" dominantBaseline="middle"
+            className="fill-muted-foreground" style={{fontSize:11}}>+{cols-shown} more</text>
+        )}
+      </svg>
+      <div className="mt-2 text-xs text-muted-foreground flex flex-wrap gap-x-3 gap-y-0.5">
+        <span>Label <strong className="text-foreground">{labelW.toFixed(2)}" × {labelH.toFixed(2)}"</strong></span>
+        <span>QR ≈ <strong className="text-foreground">{qrIn.toFixed(1)}"</strong> → scans {scanDistanceLabel(qrIn)}</span>
+        {overflow && <span className="text-destructive font-medium">Too many across — reduce count or gap</span>}
       </div>
     </div>
   )
@@ -454,20 +509,12 @@ export default function LabelsPage() {
   const [thermal,setThermal]   = useState<ThermalSettings>({labelW:4,labelH:6,marginH:0.1,marginV:0.1})
   const [thermalPreset,setThermalPreset] = useState(0)
   const [wide,setWide]         = useState<WideFormatSettings>({
-    rollWidth:12.5, colsAcross:3, gap:0.3, labelH:6, maxLength:36,
-    labelW: calcLabelW(12.5, 3, 0.3)
+    rollWidth:12.5, colsAcross:3, gap:0.3, shape:'qr', maxLength:36
   })
   const [custom,setCustom]     = useState<CustomSettings>({pageW:8.5,pageH:11,cols:2,rows:3,marginH:0.5,marginV:0.5,gap:0.15})
   const [cut,setCut]           = useState<CutContourSettings>({enabled:false,offset:0.05,color:'#FF00CC',swatchName:'CutContour'})
 
-  // Keep wide.labelW in sync
-  const updateWide = (updates: Partial<WideFormatSettings>) => {
-    setWide(prev => {
-      const next = {...prev,...updates}
-      next.labelW = calcLabelW(next.rollWidth, next.colsAcross, next.gap)
-      return next
-    })
-  }
+  const updateWide = (updates: Partial<WideFormatSettings>) => setWide(prev => ({...prev,...updates}))
 
   const toggleBin   = (id:string) => setSelected(prev=>{const n=new Set(prev);n.has(id)?n.delete(id):n.add(id);return n})
   const selectAll   = () => setSelected(new Set(bins.map(b=>b.id)))
@@ -478,9 +525,13 @@ export default function LabelsPage() {
   const {cols:hCols,rows:hRows}=HOME_GRID[homeLpp]
   const hGap=0.12, hLw=(7.5-hGap*(hCols-1))/hCols, hLh=(10-hGap*(hRows-1))/hRows
 
-  // Wide
-  const wideRows  = Math.ceil(selectedBins.length / wide.colsAcross)
-  const wideStripH= wideRows*wide.labelH+(wideRows-1)*wide.gap
+  // Wide — width from the roll math, height locked to the chosen shape ratio
+  const wideRawW  = (wide.rollWidth - 0.5 - wide.gap*(wide.colsAcross-1)) / wide.colsAcross
+  const wideOverflow = wideRawW < 0.5
+  const wideLabelW = calcLabelW(wide.rollWidth, wide.colsAcross, wide.gap)
+  const wideLabelH = wideLabelW * WIDE_SHAPES[wide.shape].ratio
+  const wideRows  = Math.max(1, Math.ceil(selectedBins.length / wide.colsAcross))
+  const wideStripH= wideRows*wideLabelH+(wideRows-1)*wide.gap
 
   // Custom
   const cLw = (custom.pageW-custom.marginH*2-custom.gap*(custom.cols-1))/custom.cols
@@ -490,7 +541,7 @@ export default function LabelsPage() {
   const calcScale = useCallback(()=>{
     let pW=8.5, pH=11
     if(mode==='thermal')    {pW=thermal.labelW; pH=thermal.labelH}
-    if(mode==='wideformat') {pW=wide.rollWidth; pH=Math.min(wideStripH,wide.maxLength)}
+    if(mode==='wideformat') {pW=wide.rollWidth; pH=Math.max(1,Math.min(wideStripH,wide.maxLength))}
     if(mode==='custom')     {pW=custom.pageW; pH=custom.pageH}
     const aW=window.innerWidth-48, aH=window.innerHeight-120
     setScale(Math.min(1, aW/(pW*96), aH/(pH*96)))
@@ -507,7 +558,7 @@ export default function LabelsPage() {
     let html=''
     if(mode==='home')       html=buildHomePrint(selectedBins,homeLpp,cut)
     if(mode==='thermal')    html=buildThermalPrint(selectedBins,thermal.labelW,thermal.labelH,thermal.marginH,thermal.marginV,cut)
-    if(mode==='wideformat') html=buildWideFormatPrint(selectedBins,wide.rollWidth,wide.labelW,wide.labelH,wide.gap,wide.maxLength,cut)
+    if(mode==='wideformat') html=buildWideFormatPrint(selectedBins,wide.rollWidth,wide.colsAcross,wideLabelW,wideLabelH,wide.gap,wide.maxLength,cut)
     if(mode==='custom')     html=buildCustomPrint(selectedBins,custom,cut)
     openPrint(html)
   }
@@ -603,26 +654,37 @@ export default function LabelsPage() {
             {/* WIDE FORMAT */}
             {mode==='wideformat' && (
               <div className="space-y-4">
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                <div>
+                  <Label className="text-xs mb-2 block">Label shape</Label>
+                  <div className="flex flex-wrap gap-2">
+                    {(Object.keys(WIDE_SHAPES) as WideShape[]).map(s=>(
+                      <button key={s} onClick={()=>updateWide({shape:s})}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors ${wide.shape===s?'bg-primary text-primary-foreground border-primary':'border-border bg-card hover:bg-accent'}`}>
+                        {WIDE_SHAPES[s].label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1.5">{WIDE_SHAPES[wide.shape].hint}. Width fills the roll; height is locked to this shape.</p>
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                   <NumInput label="Roll width"     value={wide.rollWidth}   onChange={v=>updateWide({rollWidth:v})}   min={4} max={60} step={0.5}/>
                   <NumInput label="Labels across"  value={wide.colsAcross}  onChange={v=>updateWide({colsAcross:Math.max(1,Math.round(v))})} min={1} max={30} step={1} suffix=""/>
                   <NumInput label="Gap between"    value={wide.gap}         onChange={v=>updateWide({gap:v})}         min={0.1} max={2} step={0.05}/>
-                  <NumInput label="Label height"   value={wide.labelH}      onChange={v=>updateWide({labelH:v})}      min={1} max={30} step={0.5}/>
                   <NumInput label="Max strip length" value={wide.maxLength} onChange={v=>updateWide({maxLength:v})}   min={6} max={120} step={1}/>
                 </div>
 
-                {/* Auto-fit result */}
-                <div className={`rounded-lg px-4 py-3 text-sm ${wide.labelW<=0?'bg-destructive/10 text-destructive':'bg-primary/10 text-primary'}`}>
-                  {wide.labelW<=0
-                    ? '⚠️ Too many labels across for this roll width. Reduce count or gap.'
-                    : <>
-                        ✓ Auto-fit: <strong>{wide.colsAcross}</strong> labels across ·
-                        label width = <strong>{wide.labelW.toFixed(3)}"</strong> ·
-                        gap = <strong>{wide.gap}"</strong> ·
-                        {selectedBins.length>0&&<> strip = <strong>{wideStripH.toFixed(1)}"</strong> long for {selectedBins.length} labels</>}
-                      </>
-                  }
-                </div>
+                <WideFormatDiagram
+                  rollWidth={wide.rollWidth} cols={wide.colsAcross} gap={wide.gap}
+                  labelW={wideLabelW} labelH={wideLabelH} overflow={wideOverflow}
+                />
+
+                {selectedBins.length>0 && !wideOverflow && (
+                  <p className="text-xs text-muted-foreground">
+                    Strip ≈ <strong className="text-foreground">{wideStripH.toFixed(1)}"</strong> long for {selectedBins.length} label{selectedBins.length!==1?'s':''}
+                    {wideStripH>wide.maxLength && <> — will split into strips of {wide.maxLength}"</>}
+                  </p>
+                )}
               </div>
             )}
 
@@ -730,15 +792,15 @@ export default function LabelsPage() {
               </div>
             ))}
 
-            {mode==='wideformat'&&wide.labelW>0&&(()=>{
-              const pH=Math.min(wideStripH,wide.maxLength)
+            {mode==='wideformat'&&!wideOverflow&&(()=>{
+              const pH=Math.max(1,Math.min(wideStripH,wide.maxLength))
               return (
                 <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'8px'}}>
-                  <p style={{color:'#475569',fontSize:'11px'}}>{wide.rollWidth}" wide · {wideStripH.toFixed(1)}" long · {wide.colsAcross} across · label {wide.labelW.toFixed(3)}" × {wide.labelH}"</p>
+                  <p style={{color:'#475569',fontSize:'11px'}}>{wide.rollWidth}" wide · {wideStripH.toFixed(1)}" long · {wide.colsAcross} across · label {wideLabelW.toFixed(2)}" × {wideLabelH.toFixed(2)}" ({WIDE_SHAPES[wide.shape].label})</p>
                   <div style={{width:`${wide.rollWidth*96*scale}px`,height:`${pH*96*scale}px`,position:'relative',flexShrink:0}}>
                     <div style={{position:'absolute',top:0,left:0,transformOrigin:'top left',transform:`scale(${scale})`}}>
-                      <div style={{width:`${wide.rollWidth}in`,height:`${pH}in`,backgroundColor:'white',padding:'0 0.25in 0.1in',boxSizing:'border-box',boxShadow:'0 8px 40px rgba(0,0,0,0.5)',display:'grid',gridTemplateColumns:`repeat(${wide.colsAcross},${wide.labelW}in)`,gap:`${wide.gap}in`,alignContent:'start',paddingTop:'0.1in'}}>
-                        {selectedBins.map(bin=><LabelCard key={bin.id} bin={bin} w={wide.labelW} h={wide.labelH} layout={pickLayout(wide.labelW,wide.labelH)} cut={cut}/>)}
+                      <div style={{width:`${wide.rollWidth}in`,height:`${pH}in`,backgroundColor:'white',padding:'0 0.25in 0.1in',boxSizing:'border-box',boxShadow:'0 8px 40px rgba(0,0,0,0.5)',display:'grid',gridTemplateColumns:`repeat(${wide.colsAcross},${wideLabelW}in)`,gap:`${wide.gap}in`,alignContent:'start',paddingTop:'0.1in'}}>
+                        {selectedBins.map(bin=><LabelCard key={bin.id} bin={bin} w={wideLabelW} h={wideLabelH} layout={pickLayout(wideLabelW,wideLabelH)} cut={cut}/>)}
                       </div>
                     </div>
                   </div>
