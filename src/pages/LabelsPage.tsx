@@ -109,23 +109,53 @@ function scanDistanceLabel(qrInches: number): string {
   return ft < 1 ? `~${Math.round(qrInches * 10)}in` : `~${ft.toFixed(1)} ft`
 }
 
-function labelMetrics(w: number, h: number, layout: LabelLayout) {
-  const pad = clamp(Math.min(w, h) * 0.07, 0.05, 0.3)          // inches
-  const stripePx = clamp(h * 96 * 0.04, 4, 22)
-  const innerH = h - pad * 2 - stripePx / 96
+// Which supporting fields fit on a label of this size. Small labels drop text
+// so the number + QR (the point of the label) keep their space.
+function labelFields(w: number, h: number, bin: { location: string; description: string }) {
+  const area = w * h
+  return {
+    showName: h >= 1.1,
+    showLoc: !!bin.location && area >= 12,
+    // Description only on large labels — on medium ones it would crowd out the QR.
+    showDesc: !!bin.description && area >= 22 && h >= 3,
+  }
+}
+type LabelFields = ReturnType<typeof labelFields>
 
-  // Bin number — full label width, capped so it can't swallow a short label.
-  const numPx = clamp((w - pad * 2) * 96 * 0.3, 13, innerH * 96 * 0.4)
-  const namePx = clamp(numPx * 0.4, 9, 84)
-  const descPx = clamp(numPx * 0.3, 7, 34)
-  const numRowIn = (numPx * 1.05) / 96
+function labelMetrics(w: number, h: number, layout: LabelLayout, f: LabelFields) {
+  const pad = clamp(Math.min(w, h) * 0.06, 0.05, 0.26)          // inches
+  const stripePx = clamp(h * 96 * 0.035, 4, 20)
+  const innerW = w - pad * 2
+  const innerHpx = (h - pad * 2) * 96 - stripePx
 
-  // QR — fills whatever the number row leaves, biased large.
-  const qrIn = layout === 'split'
-    ? clamp(innerH - numRowIn - pad, 0.5, (w - pad * 3) * 0.55)
-    : clamp(innerH - numRowIn - pad, 0.5, w - pad * 2)
+  if (layout === 'split') {
+    // Number + text in a left column; QR fills the full height on the right.
+    const leftW  = innerW * 0.52
+    const numPx  = clamp(leftW * 96 * 0.34, 12, innerHpx * 0.42)
+    const namePx = clamp(numPx * 0.44, 8, 60)
+    const descPx = clamp(numPx * 0.34, 7, 24)
+    const qrPx   = clamp(Math.min(innerHpx - pad * 8, innerW * 96 * 0.46), 56, innerHpx)
+    return { pad, stripePx, numPx, namePx, descPx, qrPx: Math.round(qrPx) }
+  }
 
-  return { pad, stripePx, numPx, namePx, descPx, qrIn, qrPx: Math.round(qrIn * 96) }
+  // Stack: number on top, text, then QR fills the rest.
+  const numPx = clamp(innerW * 96 * 0.27, 12, innerHpx * 0.32)
+  const namePx = clamp(numPx * 0.42, 8, 64)
+  const descPx = clamp(numPx * 0.32, 7, 26)
+
+  // Estimated height of the stacked text block (px) — number plus whatever
+  // supporting fields are actually shown. Leaves the QR real room.
+  const textStackPx =
+    numPx * 1.18 +
+    (f.showName ? namePx * 1.35 : 0) +
+    (f.showLoc  ? descPx * 1.5  : 0) +
+    (f.showDesc ? descPx * 2.7  : 0)
+
+  // QR — the rest. Also CSS-clamped at render time so a bad estimate can only
+  // shrink it, never overflow the label.
+  const qrPx = clamp(innerHpx - textStackPx - pad * 40, 56, innerW * 96)
+
+  return { pad, stripePx, numPx, namePx, descPx, qrPx: Math.round(qrPx) }
 }
 
 // ─── Cut Contour SVG Overlay ──────────────────────────────────────────────────
@@ -196,28 +226,30 @@ function LabelCard({ bin, w, h, layout, cut }: {
   bin: BinData; w: number; h: number; layout: LabelLayout; cut: CutContourSettings
 }) {
   const qrUrl = `${window.location.origin}/bin/${bin.id}`
-  const m = labelMetrics(w, h, layout)
-  const showDesc = !!bin.description && h >= 2
+  const f = labelFields(w, h, bin)
+  const m = labelMetrics(w, h, layout, f)
 
   const num = (
-    <div style={{fontFamily:'monospace',fontSize:m.numPx,color:'#0f172a',fontWeight:900,lineHeight:1,letterSpacing:'-0.02em',flexShrink:0}}>
+    <div style={{fontFamily:'monospace',fontSize:m.numPx,color:'#0f172a',fontWeight:900,lineHeight:1.1,letterSpacing:'-0.02em',flexShrink:0,overflow:'hidden'}}>
       #{formatBinNumber(bin.binNumber)}
     </div>
   )
   const text = (
-    <>
-      <div style={{fontWeight:800,fontSize:m.namePx,color:'#0f172a',lineHeight:1.1,wordBreak:'break-word',marginTop:m.namePx*0.25}}>
-        {bin.name}
-      </div>
-      {bin.location&&<div style={{fontSize:m.descPx,color:'#475569',marginTop:m.descPx*0.4,fontWeight:600}}>{bin.location}</div>}
-      {showDesc&&(
-        <div style={{fontSize:m.descPx,color:'#94a3b8',marginTop:m.descPx*0.3,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical' as const}}>
+    <div style={{overflow:'hidden',minHeight:0}}>
+      {f.showName&&<div style={{fontWeight:800,fontSize:m.namePx,color:'#0f172a',lineHeight:1.15,wordBreak:'break-word'}}>{bin.name}</div>}
+      {f.showLoc&&<div style={{fontSize:m.descPx,color:'#475569',marginTop:m.descPx*0.45,fontWeight:600,lineHeight:1.2}}>{bin.location}</div>}
+      {f.showDesc&&(
+        <div style={{fontSize:m.descPx,color:'#94a3b8',marginTop:m.descPx*0.35,lineHeight:1.25,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical' as const}}>
           {bin.description}
         </div>
       )}
-    </>
+    </div>
   )
-  const qr = <div style={{flexShrink:0,lineHeight:0}}><QRCodeSVG value={qrUrl} size={m.qrPx}/></div>
+  const qr = (
+    <div style={{width:m.qrPx,height:m.qrPx,maxWidth:'100%',maxHeight:'100%',flexShrink:0}}>
+      <QRCodeSVG value={qrUrl} size={m.qrPx} style={{width:'100%',height:'100%',display:'block'}}/>
+    </div>
+  )
 
   return (
     // Outer wrapper is NOT clipped so the cut contour (which sits outside the
@@ -226,17 +258,20 @@ function LabelCard({ bin, w, h, layout, cut }: {
     <div style={{position:'relative',width:`${w}in`,height:`${h}in`,pageBreakInside:'avoid',boxSizing:'border-box'}}>
       <div style={{width:'100%',height:'100%',border:'1.5px solid #cbd5e1',borderRadius:'8px',overflow:'hidden',backgroundColor:'white',display:'flex',flexDirection:'column',boxSizing:'border-box'}}>
         <div style={{height:m.stripePx,backgroundColor:bin.color,flexShrink:0,WebkitPrintColorAdjust:'exact',printColorAdjust:'exact'} as React.CSSProperties}/>
-        <div style={{flex:1,display:'flex',flexDirection:'column',padding:`${m.pad}in`,overflow:'hidden'}}>
-          {num}
+        <div style={{flex:1,display:'flex',flexDirection:'column',padding:`${m.pad}in`,overflow:'hidden',minHeight:0}}>
           {layout==='split'?(
-            <div style={{flex:1,display:'flex',flexDirection:'row',gap:`${m.pad}in`,alignItems:'center',overflow:'hidden',marginTop:m.pad*48}}>
-              <div style={{flex:1,overflow:'hidden'}}>{text}</div>
-              {qr}
+            <div style={{flex:1,display:'flex',flexDirection:'row',gap:`${m.pad}in`,alignItems:'stretch',overflow:'hidden',minHeight:0}}>
+              <div style={{flex:1,minWidth:0,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+                {num}
+                <div style={{marginTop:m.namePx*0.3,overflow:'hidden',minHeight:0}}>{text}</div>
+              </div>
+              <div style={{flexShrink:0,alignSelf:'center',maxWidth:'48%',maxHeight:'100%',display:'flex'}}>{qr}</div>
             </div>
           ):(
             <>
-              <div style={{flexShrink:0}}>{text}</div>
-              <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',minHeight:0,marginTop:m.pad*48}}>{qr}</div>
+              {num}
+              <div style={{flexShrink:0,minHeight:0,marginTop:m.namePx*0.3}}>{text}</div>
+              <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',minHeight:0,overflow:'hidden',marginTop:m.pad*36}}>{qr}</div>
             </>
           )}
         </div>
@@ -250,35 +285,39 @@ function LabelCard({ bin, w, h, layout, cut }: {
 
 function buildLabelHtml(bin: BinData, w: number, h: number, cut: CutContourSettings, layout: LabelLayout): string {
   const qrUrl  = `${window.location.origin}/bin/${bin.id}`
-  const m      = labelMetrics(w, h, layout)
-  const qrSvg  = ReactDOMServer.renderToStaticMarkup(<QRCodeSVG value={qrUrl} size={m.qrPx}/>)
+  const f      = labelFields(w, h, bin)
+  const m      = labelMetrics(w, h, layout, f)
+  const qrSvg  = ReactDOMServer.renderToStaticMarkup(
+    <QRCodeSVG value={qrUrl} size={m.qrPx} style={{width:'100%',height:'100%',display:'block'}}/>
+  )
   const numStr = String(bin.binNumber).padStart(3,'0')
   const stripe = safeColor(bin.color)
-  const showDesc = bin.description && h >= 2
 
-  const numHtml = `<div style="font-family:monospace;font-size:${m.numPx}px;color:#0f172a;font-weight:900;line-height:1;letter-spacing:-0.02em;flex-shrink:0">#${numStr}</div>`
-  const textHtml = `
-    <div style="font-weight:800;font-size:${m.namePx}px;color:#0f172a;line-height:1.1;word-break:break-word;margin-top:${m.namePx*0.25}px">${escapeHtml(bin.name)}</div>
-    ${bin.location?`<div style="font-size:${m.descPx}px;color:#475569;margin-top:${m.descPx*0.4}px;font-weight:600">${escapeHtml(bin.location)}</div>`:''}
-    ${showDesc?`<div style="font-size:${m.descPx}px;color:#94a3b8;margin-top:${m.descPx*0.3}px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${escapeHtml(bin.description)}</div>`:''}
-  `
-  const qrHtml = `<div style="flex-shrink:0;line-height:0">${qrSvg}</div>`
+  const numHtml = `<div style="font-family:monospace;font-size:${m.numPx}px;color:#0f172a;font-weight:900;line-height:1.1;letter-spacing:-0.02em;flex-shrink:0;overflow:hidden">#${numStr}</div>`
+  const textHtml = `<div style="overflow:hidden;min-height:0">
+    ${f.showName?`<div style="font-weight:800;font-size:${m.namePx}px;color:#0f172a;line-height:1.15;word-break:break-word">${escapeHtml(bin.name)}</div>`:''}
+    ${f.showLoc?`<div style="font-size:${m.descPx}px;color:#475569;margin-top:${m.descPx*0.45}px;font-weight:600;line-height:1.2">${escapeHtml(bin.location)}</div>`:''}
+    ${f.showDesc?`<div style="font-size:${m.descPx}px;color:#94a3b8;margin-top:${m.descPx*0.35}px;line-height:1.25;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${escapeHtml(bin.description)}</div>`:''}
+  </div>`
+  const qrHtml = `<div style="width:${m.qrPx}px;height:${m.qrPx}px;max-width:100%;max-height:100%;flex-shrink:0">${qrSvg}</div>`
 
   const body = layout === 'split'
-    ? `${numHtml}
-       <div style="flex:1;display:flex;flex-direction:row;gap:${m.pad}in;align-items:center;overflow:hidden;margin-top:${m.pad/2}in">
-         <div style="flex:1;overflow:hidden">${textHtml}</div>
-         ${qrHtml}
+    ? `<div style="flex:1;display:flex;flex-direction:row;gap:${m.pad}in;align-items:stretch;overflow:hidden;min-height:0">
+         <div style="flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden">
+           ${numHtml}
+           <div style="margin-top:${m.namePx*0.3}px;overflow:hidden;min-height:0">${textHtml}</div>
+         </div>
+         <div style="flex-shrink:0;align-self:center;max-width:48%;max-height:100%;display:flex">${qrHtml}</div>
        </div>`
     : `${numHtml}
-       <div style="flex-shrink:0">${textHtml}</div>
-       <div style="flex:1;display:flex;align-items:center;justify-content:center;min-height:0;margin-top:${m.pad/2}in">${qrHtml}</div>`
+       <div style="flex-shrink:0;min-height:0;margin-top:${m.namePx*0.3}px">${textHtml}</div>
+       <div style="flex:1;display:flex;align-items:center;justify-content:center;min-height:0;overflow:hidden;margin-top:${m.pad*0.75}in">${qrHtml}</div>`
 
   return `
     <div style="position:relative;width:${w}in;height:${h}in;page-break-inside:avoid;box-sizing:border-box;">
       <div style="width:100%;height:100%;border:1.5px solid #cbd5e1;border-radius:8px;overflow:hidden;background:white;display:flex;flex-direction:column;box-sizing:border-box;">
         <div style="height:${m.stripePx}px;background:${stripe};flex-shrink:0;-webkit-print-color-adjust:exact;print-color-adjust:exact;color-adjust:exact"></div>
-        <div style="flex:1;display:flex;flex-direction:column;padding:${m.pad}in;overflow:hidden">
+        <div style="flex:1;display:flex;flex-direction:column;padding:${m.pad}in;overflow:hidden;min-height:0">
           ${body}
         </div>
       </div>
@@ -313,7 +352,7 @@ function openPrint(html: string) {
 function buildHomePrint(bins:BinData[], lpp:1|2|3|4|5|6, cut:CutContourSettings) {
   const {cols,rows}=HOME_GRID[lpp], gap=0.12, pw=7.5, ph=10
   const lw=(pw-gap*(cols-1))/cols, lh=(ph-gap*(rows-1))/rows
-  const perPage=cols*rows, layout:LabelLayout=lpp===3?'split':'stack'
+  const perPage=cols*rows, layout:LabelLayout=(lpp===2||lpp===3)?'split':'stack'
   const pages:BinData[][]=[]
   for(let i=0;i<bins.length;i+=perPage) pages.push(bins.slice(i,i+perPage))
   const body=pages.map((pg,pi)=>`
@@ -393,7 +432,8 @@ function WideFormatDiagram({rollWidth,cols,gap,labelW,labelH,overflow}:{
   const drawH = Math.max(28, Math.min(labelH * scale, 150))
   const gapPx = gap * scale
   const shown = Math.min(cols, 8)
-  const qrIn = labelMetrics(labelW, labelH, pickLayout(labelW, labelH)).qrIn
+  const lay = pickLayout(labelW, labelH)
+  const qrIn = labelMetrics(labelW, labelH, lay, labelFields(labelW, labelH, {location:'x', description:'x'})).qrPx / 96
   const qrPx = Math.max(0, Math.min(qrIn * scale, boxW - 8, drawH - 8))
 
   return (
@@ -772,7 +812,7 @@ export default function LabelsPage() {
                 <div style={{width:`${8.5*96*scale}px`,height:`${11*96*scale}px`,position:'relative',flexShrink:0}}>
                   <div style={{position:'absolute',top:0,left:0,transformOrigin:'top left',transform:`scale(${scale})`}}>
                     <div style={{width:'8.5in',height:'11in',backgroundColor:'white',padding:'0.5in',boxSizing:'border-box',boxShadow:'0 8px 40px rgba(0,0,0,0.5)',display:'grid',gridTemplateColumns:`repeat(${hCols},${hLw}in)`,gridTemplateRows:`repeat(${hRows},${hLh}in)`,gap:`${hGap}in`}}>
-                      {pg.map(bin=><LabelCard key={bin.id} bin={bin} w={hLw} h={hLh} layout={homeLpp===3?'split':'stack'} cut={cut}/>)}
+                      {pg.map(bin=><LabelCard key={bin.id} bin={bin} w={hLw} h={hLh} layout={(homeLpp===2||homeLpp===3)?'split':'stack'} cut={cut}/>)}
                     </div>
                   </div>
                 </div>
