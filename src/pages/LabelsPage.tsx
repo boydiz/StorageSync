@@ -58,6 +58,26 @@ function calcLabelW(rollWidth: number, cols: number, gap: number): number {
   return Math.max(0.5, (usable - gap * (cols - 1)) / cols)
 }
 
+// ─── HTML/CSS sanitizers for print-window string building ──────────────────────
+// Label HTML is assembled by string concatenation and opened as a same-origin
+// blob: URL, so any unescaped bin/cut field would execute script in the app's
+// origin. Escape everything user-controlled before it goes into markup.
+
+function escapeHtml(value: string): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+// Colors land in CSS/SVG contexts where HTML-escaping is not enough; only allow
+// a hex literal, otherwise fall back to black.
+function safeColor(value: string): string {
+  return /^#[0-9a-fA-F]{3,8}$/.test(String(value ?? '').trim()) ? value.trim() : '#000000'
+}
+
 // ─── Cut Contour SVG Overlay ──────────────────────────────────────────────────
 // Returns an SVG element that sits on top of the label as an overlay
 // Uses a rounded rectangle with the specified stroke
@@ -113,10 +133,10 @@ function cutContourSvgStr(w: number, h: number, cut: CutContourSettings): string
 
   return `<svg xmlns="http://www.w3.org/2000/svg"
     style="position:absolute;top:${inset}px;left:${inset}px;width:${W}px;height:${H}px;pointer-events:none;overflow:visible;z-index:10">
-    <title>${cut.swatchName}</title>
+    <title>${escapeHtml(cut.swatchName)}</title>
     <rect x="${sw/2}" y="${sw/2}" width="${W-sw}" height="${H-sw}"
       rx="${radius}" ry="${radius}"
-      fill="none" stroke="${cut.color}" stroke-width="${sw}" stroke-dasharray="6 3"/>
+      fill="none" stroke="${safeColor(cut.color)}" stroke-width="${sw}" stroke-dasharray="6 3"/>
   </svg>`
 }
 
@@ -187,12 +207,13 @@ function buildLabelHtml(bin: BinData, w: number, h: number, cut: CutContourSetti
   const qrPx   = Math.round(qrFrac * Math.min(w,h) * 96)
   const qrSvg  = ReactDOMServer.renderToStaticMarkup(<QRCodeSVG value={qrUrl} size={qrPx}/>)
   const numStr = String(bin.binNumber).padStart(3,'0')
+  const stripe = safeColor(bin.color)
 
   const textHtml = `
     <div style="font-family:monospace;font-size:${numSz};color:#1e293b;font-weight:900;line-height:1;letter-spacing:-0.01em">#${numStr}</div>
-    <div style="font-weight:900;font-size:${nameSz};color:#0f172a;line-height:1.1;word-break:break-word;margin-top:3px">${bin.name}</div>
-    ${bin.location?`<div style="font-size:${descSz};color:#475569;margin-top:4px;font-weight:500">${bin.location}</div>`:''}
-    ${bin.description&&area>8?`<div style="font-size:${descSz};color:#94a3b8;margin-top:3px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${bin.description}</div>`:''}
+    <div style="font-weight:900;font-size:${nameSz};color:#0f172a;line-height:1.1;word-break:break-word;margin-top:3px">${escapeHtml(bin.name)}</div>
+    ${bin.location?`<div style="font-size:${descSz};color:#475569;margin-top:4px;font-weight:500">${escapeHtml(bin.location)}</div>`:''}
+    ${bin.description&&area>8?`<div style="font-size:${descSz};color:#94a3b8;margin-top:3px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${escapeHtml(bin.description)}</div>`:''}
   `
   const inner = isLayout3
     ? `<div style="flex:1;overflow:hidden">${textHtml}</div><div style="flex-shrink:0">${qrSvg}</div>`
@@ -201,7 +222,7 @@ function buildLabelHtml(bin: BinData, w: number, h: number, cut: CutContourSetti
   return `
     <div style="width:${w}in;height:${h}in;border:1.5px solid #cbd5e1;border-radius:8px;overflow:hidden;background:white;display:flex;flex-direction:column;page-break-inside:avoid;box-sizing:border-box;position:relative;">
       ${cutContourSvgStr(w,h,cut)}
-      <div style="height:${stripeH};background:${bin.color};flex-shrink:0;-webkit-print-color-adjust:exact;print-color-adjust:exact;color-adjust:exact"></div>
+      <div style="height:${stripeH};background:${stripe};flex-shrink:0;-webkit-print-color-adjust:exact;print-color-adjust:exact;color-adjust:exact"></div>
       <div style="flex:1;display:flex;flex-direction:${isLayout3?'row':'column'};padding:${pad};gap:${isLayout3?'0.5rem':'3px'};overflow:hidden;${isLayout3?'align-items:center':''}">
         ${inner}
       </div>
@@ -209,8 +230,9 @@ function buildLabelHtml(bin: BinData, w: number, h: number, cut: CutContourSetti
 }
 
 function printHtmlWrapper(body: string, pageSize: string, margin: string, cut: CutContourSettings): string {
+  const swatchComment = String(cut.swatchName ?? '').replace(/[*/<>]/g, '')
   const swatchCss = cut.enabled
-    ? `/* Cut contour swatch: ${cut.swatchName} = ${cut.color} */\n    .cut-contour { stroke: ${cut.color}; }`
+    ? `/* Cut contour swatch: ${swatchComment} = ${safeColor(cut.color)} */\n    .cut-contour { stroke: ${safeColor(cut.color)}; }`
     : ''
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>StorageSync Labels</title>
   <style>

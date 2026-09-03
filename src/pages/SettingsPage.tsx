@@ -96,7 +96,7 @@ export default function SettingsPage() {
       const { error: accessError } = await supabase.from('shared_access').insert({ owner_id: user!.id, shared_with_user_id: userId })
       if (accessError) { toast('Already shared with this user', 'error'); return }
 
-      await supabase.from('user_roles').upsert({ user_id: userId, role: 'viewer' })
+      // The viewer role is assigned server-side by the shared_access trigger.
       toast(`Shared with ${shareEmail}!`)
       setShareEmail('')
       loadSharedUsers()
@@ -107,9 +107,9 @@ export default function SettingsPage() {
     }
   }
 
-  const handleRemoveShare = async (shareId: string, userId: string) => {
+  const handleRemoveShare = async (shareId: string) => {
+    // Removing the shared_access row drops the viewer role via the trigger.
     await supabase.from('shared_access').delete().eq('id', shareId)
-    await supabase.from('user_roles').delete().eq('user_id', userId).eq('role', 'viewer')
     loadSharedUsers()
     toast('Access removed')
   }
@@ -217,7 +217,7 @@ export default function SettingsPage() {
                     <p className="text-sm font-medium">{u.email}</p>
                     <p className="text-xs text-muted-foreground">Viewer</p>
                   </div>
-                  <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => handleRemoveShare(u.id, u.sharedWithUserId)}>
+                  <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => handleRemoveShare(u.id)}>
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </div>
