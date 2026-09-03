@@ -5,6 +5,7 @@ Home storage-bin management app. Track physical bins and the items inside them, 
 - **Live:** storagesync.boydcartwright.com
 - **Deploy:** push to GitHub `main` → Vercel auto-deploys. No separate deploy step.
 - **Env vars** (`VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`): read from `import.meta.env` only. **Never put values in the repo** — they live in the Vercel dashboard. To add a new one, reference `import.meta.env.X` in code and tell the user to set the value in Vercel.
+- **DB migrations:** SQL files in `supabase/migrations/` (`NNN_name.sql`). Not applied by CI. Run them with `supabase db push` (see below) or by pasting into the Supabase SQL editor. Tell the user when a change needs a migration and don't assume it's live until they confirm.
 
 ## Stack
 
@@ -26,6 +27,19 @@ npm run preview     # preview production build
 ```
 
 No test suite, no lint config, no CI beyond Vercel.
+
+### Supabase CLI / migrations
+
+`supabase/config.toml` is committed (`project_id = "storagesync"`). The CLI (`supabase`, installed globally) is the preferred way to apply migrations:
+
+```
+supabase login                                # one-time, browser access token
+supabase link --project-ref <ref>              # one-time, ref from dashboard URL
+supabase migration repair --status applied 001 002 003   # one-time, mark hand-run migrations as done
+supabase db push                               # apply any local migration not yet on the remote
+```
+
+Version is parsed from the leading digits of the filename, so the `NNN_` names work as-is. New migration: `supabase migration new <name>` or just add the next `NNN_*.sql`. Migrations `001`–`003` were applied by hand via the SQL editor before the CLI workflow existed.
 
 ## Architecture
 
@@ -56,10 +70,11 @@ All queries keyed by `user?.id` and gated with `enabled: !!user`. Each hook maps
 Tables: `bins`, `items`, `app_settings`, `user_roles`, `shared_access`. **RLS enabled on all.**
 
 - Owners fully manage their own rows (`auth.uid() = user_id`).
-- A `shared_access` row grants the target user **read-only** access to the owner's bins / items / settings, plus a `viewer` role in `user_roles`.
+- A `shared_access` row grants the target user **read-only** access to the owner's bins / items / settings. The row also stores the invitee's `email` (migration `003`) so the Settings list can show it without an admin API call.
+- `user_roles` is **read-only from the client** (migration `002` dropped the policy that let users edit their own role). The `viewer` role is maintained server-side by the `sync_viewer_role` trigger on `shared_access` insert/delete. App still treats "no viewer row" as admin; admin is never written explicitly.
 - `bins` has `unique(user_id, bin_number)`.
 
-`SECURITY DEFINER` functions: `get_user_id_by_email`, `has_role`, `has_shared_access`, `get_next_bin_number`.
+`SECURITY DEFINER` functions: `get_user_id_by_email`, `has_role`, `has_shared_access`, `get_next_bin_number`, `sync_viewer_role`.
 
 Trigger `on_auth_user_created` auto-inserts an `app_settings` row on signup.
 
@@ -67,14 +82,14 @@ Trigger `on_auth_user_created` auto-inserts an `app_settings` row on signup.
 
 - **Dashboard** — combined search over bins + items.
 - **ItemsPage** — all items, multi-select bulk "move to bin" dialog (admin only).
-- **BinDetail** — QR code (`origin/bin/:id`), item list, delete-confirm dialog. "Print Label" here just calls `window.print()` (prints whole page — not the polished path).
+- **BinDetail** — QR code (`origin/bin/:id`), item list, delete-confirm dialog. "Print Label" navigates to `/labels?bin=<id>` (Labels page with that bin preselected).
 - **BinForm / ItemForm** — create + edit. ItemForm pre-fills bin from `?binId=` query param.
 - **LabelsPage** — the complex one. See below.
-- **SettingsPage** — branding (app name/description + logo as data URL, 200 KB cap), dark toggle, share-by-email. Note: `loadSharedUsers` calls `supabase.auth.admin.getUserById` from the browser, which needs the service-role key — so it silently falls back to showing the raw UUID instead of the email.
+- **SettingsPage** — branding (app name/description + logo as data URL, 200 KB cap), dark toggle, share-by-email. `handleShare` stores the typed email on the `shared_access` row; `loadSharedUsers` reads it back directly.
 
 ### LabelsPage (`src/pages/LabelsPage.tsx`)
 
-Select bins, configure, preview full-screen (scaled), then print by opening a Blob URL window that carries its own `@page` CSS.
+Select bins, configure, preview full-screen (scaled), then print by opening a Blob URL window that carries its own `@page` CSS. Initial selection is seeded from the `?bin=<id>` query param (used by BinDetail's "Print Label"). All bin/cut text is run through `escapeHtml` / `safeColor` before it goes into the concatenated print HTML — the Blob window is same-origin, so unescaped fields would be an XSS sink (migration-era fix).
 
 **4 print modes**, each with **cut contour** support:
 
