@@ -93,14 +93,14 @@ Select bins, configure, preview full-screen (scaled), then print by opening a Bl
 
 **4 print modes**, each with **cut contour** support:
 
-1. `home` — US Letter, 1–6 labels/page (preset grids; layout 3 is a side-by-side row variant).
+1. `home` — US Letter, 1–6 labels/page (preset grids; lpp 3 uses the `split` layout).
 2. `thermal` — one label per sheet; presets (4×6, 6×4, 3×2, 2×3, 4×4) or custom W/H + margins.
-3. `wideformat` — roll printing; user sets roll width / labels-across / gap, label width auto-computed via `calcLabelW`; strip length capped at `maxLength`.
+3. `wideformat` — roll printing; user sets roll width / labels-across / gap, label **width** auto-computed via `calcLabelW`, label **height** locked to `WIDE_SHAPES[shape].ratio` (`qr` / `square` / `wide`). `WideFormatDiagram` shows a to-scale sketch + estimated QR scan distance; strip length capped at `maxLength`.
 4. `custom` — arbitrary page W/H, cols, rows, margins, gap.
 
-**Cut contour** (`CutContourSettings`): optional dashed rounded-rect SVG overlay drawn on top of each label, with configurable offset (−0.1"–0.1", inside/outside the label edge), color, and a spot-color / swatch name (e.g. `CutContour`, `Die Cut`) that must match the RIP software's cut layer. Rendered both as a React component (`CutContourOverlay`) for preview and as a raw SVG string (`cutContourSvgStr`) for the print HTML.
+**Cut contour** (`CutContourSettings`): optional dashed rounded-rect SVG overlay, configurable offset (−0.1"–0.1", inside/outside the label edge), color, spot-color / swatch name. Rendered as `CutContourOverlay` (preview) and `cutContourSvgStr` (print). It sits on a non-clipped outer wrapper *outside* the `overflow:hidden` label box so an outward offset stays visible.
 
-Label content sizing (stripe height, font sizes, QR fraction, padding) scales off label area — see `LabelCard` / `buildLabelHtml`, which are kept visually in sync.
+**Label geometry** is one shared helper, `labelMetrics(w, h, layout)`, used by both `LabelCard` (preview) and `buildLabelHtml` (print). The **bin number** (sized to span the label width) and the **QR code** (fills the remaining space, biased large) are the primary elements; name/location/description are supporting text. `layout` is `'stack'` or `'split'` — `pickLayout(w,h)` derives it from aspect ratio for thermal/custom/wide; home maps it from lpp.
 
 ## UI primitives (`src/components/ui/`)
 
