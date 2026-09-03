@@ -36,11 +36,13 @@ const WIDE_SHAPES: Record<WideShape, { label: string; ratio: number; hint: strin
 }
 
 interface WideFormatSettings {
-  rollWidth: number
+  sheetW: number        // sheet boundary width (material width)
+  sheetLen: number      // max sheet length; a new sheet starts past this
   colsAcross: number
   gap: number
+  margin: number        // inside the sheet edge (room for reg marks later)
   shape: WideShape
-  maxLength: number
+  autoFit: boolean      // trim each sheet's length to its content, no blank tail
 }
 interface CustomSettings {
   pageW: number; pageH: number; cols: number; rows: number
@@ -64,9 +66,9 @@ const THERMAL_PRESETS = [
   {label:'3" × 2"',w:3,h:2},{label:'2" × 3"',w:2,h:3},{label:'4" × 4"',w:4,h:4},
 ]
 
-// Auto-calculate label width from roll width, columns, and gap
-function calcLabelW(rollWidth: number, cols: number, gap: number): number {
-  const usable = rollWidth - 0.5
+// Label width from sheet width, margins, columns, and gap
+function calcLabelW(sheetW: number, cols: number, gap: number, margin: number): number {
+  const usable = sheetW - margin * 2
   return Math.max(0.5, (usable - gap * (cols - 1)) / cols)
 }
 
@@ -379,20 +381,27 @@ function buildThermalPrint(bins:BinData[], lw:number, lh:number, mH:number, mV:n
   return printHtmlWrapper(body,`${lw}in ${lh}in`,'0',cut)
 }
 
-function buildWideFormatPrint(bins:BinData[], rollW:number, cols:number, labelW:number, labelH:number, gap:number, maxLen:number, cut:CutContourSettings) {
-  const usable=rollW-0.5
-  const perStrip=Math.max(1,cols*Math.floor((maxLen+gap)/(labelH+gap)))
-  const pages:BinData[][]=[]
-  for(let i=0;i<bins.length;i+=perStrip) pages.push(bins.slice(i,i+perStrip))
+function wideRowsPerSheet(sheetLen:number, labelH:number, gap:number, margin:number): number {
+  return Math.max(1, Math.floor((sheetLen - margin*2 + gap) / (labelH + gap)))
+}
+
+function buildWideFormatPrint(bins:BinData[], sheetW:number, sheetLen:number, cols:number, labelW:number, labelH:number, gap:number, margin:number, autoFit:boolean, cut:CutContourSettings) {
+  const perSheet = Math.max(1, cols * wideRowsPerSheet(sheetLen, labelH, gap, margin))
+  const sheets:BinData[][]=[]
+  for(let i=0;i<bins.length;i+=perSheet) sheets.push(bins.slice(i,i+perSheet))
+  if(sheets.length===0) sheets.push([])
   const layout=pickLayout(labelW,labelH)
-  const body=pages.map((pg,pi)=>{
-    const pgRows=Math.ceil(pg.length/cols)
-    const pgH=pgRows*labelH+(pgRows-1)*gap
-    return `<div style="width:${usable}in;height:${pgH}in;display:grid;grid-template-columns:repeat(${cols},${labelW}in);gap:${gap}in;${pi<pages.length-1?'page-break-after:always':''}">
-      ${pg.map(b=>buildLabelHtml(b,labelW,labelH,cut,layout)).join('')}
+  const body=sheets.map((pg,si)=>{
+    const usedRows=Math.max(1,Math.ceil(pg.length/cols))
+    const contentH=usedRows*labelH+(usedRows-1)*gap
+    const sheetH=autoFit ? +(contentH+margin*2).toFixed(3) : sheetLen
+    return `<div style="width:${sheetW}in;height:${sheetH}in;padding:${margin}in;box-sizing:border-box;position:relative;${si<sheets.length-1?'page-break-after:always':''}">
+      <div style="display:grid;grid-template-columns:repeat(${cols},${labelW}in);gap:${gap}in;align-content:start">
+        ${pg.map(b=>buildLabelHtml(b,labelW,labelH,cut,layout)).join('')}
+      </div>
     </div>`
   }).join('')
-  return printHtmlWrapper(body,`${rollW}in auto`,'0 0.25in',cut)
+  return printHtmlWrapper(body,`${sheetW}in auto`,'0',cut)
 }
 
 function buildCustomPrint(bins:BinData[], s:CustomSettings, cut:CutContourSettings) {
@@ -427,15 +436,15 @@ function NumInput({label,value,onChange,min=0.1,max=60,step=0.1,suffix='"'}:{
 }
 
 // ─── Wide Format Diagram ──────────────────────────────────────────────────────
-// To-scale sketch of one row of labels across the roll, with the resulting
+// To-scale sketch of one row of labels across the sheet, with the resulting
 // label size and an estimated QR scan distance.
 
-function WideFormatDiagram({rollWidth,cols,gap,labelW,labelH,overflow}:{
-  rollWidth:number;cols:number;gap:number;labelW:number;labelH:number;overflow:boolean
+function WideFormatDiagram({sheetW,margin,cols,gap,labelW,labelH,overflow}:{
+  sheetW:number;margin:number;cols:number;gap:number;labelW:number;labelH:number;overflow:boolean
 }) {
   const VW = 300
-  const scale = VW / rollWidth                       // px per inch
-  const startX = 0.25 * scale                        // 0.25" edge margin
+  const scale = VW / sheetW                          // px per inch
+  const startX = margin * scale
   const boxW = labelW * scale
   const drawH = Math.max(28, Math.min(labelH * scale, 150))
   const gapPx = gap * scale
@@ -567,7 +576,7 @@ export default function LabelsPage() {
   const [thermal,setThermal]   = useState<ThermalSettings>({labelW:4,labelH:6,marginH:0.1,marginV:0.1})
   const [thermalPreset,setThermalPreset] = useState(0)
   const [wide,setWide]         = useState<WideFormatSettings>({
-    rollWidth:12.5, colsAcross:3, gap:0.3, shape:'qr', maxLength:36
+    sheetW:12.5, sheetLen:30, colsAcross:3, gap:0.3, margin:0.25, shape:'qr', autoFit:true
   })
   const [custom,setCustom]     = useState<CustomSettings>({pageW:8.5,pageH:11,cols:2,rows:3,marginH:0.5,marginV:0.5,gap:0.15})
   const [cut,setCut]           = useState<CutContourSettings>({enabled:false,offset:0.05,color:'#FF00CC',swatchName:'CutContour'})
@@ -587,13 +596,19 @@ export default function LabelsPage() {
   const {cols:hCols,rows:hRows}=HOME_GRID[homeLpp]
   const hGap=0.12, hLw=(7.5-hGap*(hCols-1))/hCols, hLh=(10-hGap*(hRows-1))/hRows
 
-  // Wide — width from the roll math, height locked to the chosen shape ratio
-  const wideRawW  = (wide.rollWidth - 0.5 - wide.gap*(wide.colsAcross-1)) / wide.colsAcross
+  // Wide — label width from the sheet math, height locked to the shape ratio.
+  const wideRawW   = (wide.sheetW - wide.margin*2 - wide.gap*(wide.colsAcross-1)) / wide.colsAcross
   const wideOverflow = wideRawW < 0.5
-  const wideLabelW = calcLabelW(wide.rollWidth, wide.colsAcross, wide.gap)
+  const wideLabelW = calcLabelW(wide.sheetW, wide.colsAcross, wide.gap, wide.margin)
   const wideLabelH = wideLabelW * WIDE_SHAPES[wide.shape].ratio
-  const wideRows  = Math.max(1, Math.ceil(selectedBins.length / wide.colsAcross))
-  const wideStripH= wideRows*wideLabelH+(wideRows-1)*wide.gap
+  const wideRowsPer = wideRowsPerSheet(wide.sheetLen, wideLabelH, wide.gap, wide.margin)
+  const widePerSheet = Math.max(1, wide.colsAcross * wideRowsPer)
+  const wideSheets: BinData[][] = []
+  for (let i=0;i<selectedBins.length;i+=widePerSheet) wideSheets.push(selectedBins.slice(i,i+widePerSheet))
+  const wideSheetHeights = (wideSheets.length ? wideSheets : [[]]).map(pg => {
+    const rows = Math.max(1, Math.ceil((pg.length||1)/wide.colsAcross))
+    return wide.autoFit ? rows*wideLabelH + (rows-1)*wide.gap + wide.margin*2 : wide.sheetLen
+  })
 
   // Custom
   const cLw = (custom.pageW-custom.marginH*2-custom.gap*(custom.cols-1))/custom.cols
@@ -603,11 +618,11 @@ export default function LabelsPage() {
   const calcScale = useCallback(()=>{
     let pW=8.5, pH=11
     if(mode==='thermal')    {pW=thermal.labelW; pH=thermal.labelH}
-    if(mode==='wideformat') {pW=wide.rollWidth; pH=Math.max(1,Math.min(wideStripH,wide.maxLength))}
+    if(mode==='wideformat') {pW=wide.sheetW; pH=Math.max(1,Math.min(...wideSheetHeights))}
     if(mode==='custom')     {pW=custom.pageW; pH=custom.pageH}
     const aW=window.innerWidth-48, aH=window.innerHeight-120
     setScale(Math.min(1, aW/(pW*96), aH/(pH*96)))
-  },[mode,thermal,wide,wideStripH,custom])
+  },[mode,thermal,wide,wideSheetHeights,custom])
 
   useEffect(()=>{
     if(!showPreview) return
@@ -620,7 +635,7 @@ export default function LabelsPage() {
     let html=''
     if(mode==='home')       html=buildHomePrint(selectedBins,homeLpp,cut)
     if(mode==='thermal')    html=buildThermalPrint(selectedBins,thermal.labelW,thermal.labelH,thermal.marginH,thermal.marginV,cut)
-    if(mode==='wideformat') html=buildWideFormatPrint(selectedBins,wide.rollWidth,wide.colsAcross,wideLabelW,wideLabelH,wide.gap,wide.maxLength,cut)
+    if(mode==='wideformat') html=buildWideFormatPrint(selectedBins,wide.sheetW,wide.sheetLen,wide.colsAcross,wideLabelW,wideLabelH,wide.gap,wide.margin,wide.autoFit,cut)
     if(mode==='custom')     html=buildCustomPrint(selectedBins,custom,cut)
     openPrint(html)
   }
@@ -726,25 +741,36 @@ export default function LabelsPage() {
                       </button>
                     ))}
                   </div>
-                  <p className="text-xs text-muted-foreground mt-1.5">{WIDE_SHAPES[wide.shape].hint}. Width fills the roll; height is locked to this shape.</p>
+                  <p className="text-xs text-muted-foreground mt-1.5">{WIDE_SHAPES[wide.shape].hint}. Label width fills the sheet; height is locked to this shape.</p>
                 </div>
 
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  <NumInput label="Roll width"     value={wide.rollWidth}   onChange={v=>updateWide({rollWidth:v})}   min={4} max={60} step={0.5}/>
-                  <NumInput label="Labels across"  value={wide.colsAcross}  onChange={v=>updateWide({colsAcross:Math.max(1,Math.round(v))})} min={1} max={30} step={1} suffix=""/>
-                  <NumInput label="Gap between"    value={wide.gap}         onChange={v=>updateWide({gap:v})}         min={0.1} max={2} step={0.05}/>
-                  <NumInput label="Max strip length" value={wide.maxLength} onChange={v=>updateWide({maxLength:v})}   min={6} max={120} step={1}/>
+                  <NumInput label="Sheet width"      value={wide.sheetW}     onChange={v=>updateWide({sheetW:v})}     min={4} max={64} step={0.5}/>
+                  <NumInput label="Sheet length (max)" value={wide.sheetLen} onChange={v=>updateWide({sheetLen:v})}   min={6} max={120} step={1}/>
+                  <NumInput label="Labels across"    value={wide.colsAcross} onChange={v=>updateWide({colsAcross:Math.max(1,Math.round(v))})} min={1} max={30} step={1} suffix=""/>
+                  <NumInput label="Gap between"      value={wide.gap}        onChange={v=>updateWide({gap:v})}        min={0.1} max={2} step={0.05}/>
+                  <NumInput label="Sheet margin"     value={wide.margin}     onChange={v=>updateWide({margin:v})}     min={0} max={3} step={0.05}/>
                 </div>
 
+                <label className="flex items-center justify-between rounded-lg border border-border px-3 py-2.5">
+                  <div>
+                    <span className="text-sm font-medium">Auto-fit sheet length</span>
+                    <p className="text-xs text-muted-foreground">Trim each sheet to its last row — no blank tail. Off = every sheet is the full max length.</p>
+                  </div>
+                  <Switch checked={wide.autoFit} onCheckedChange={v=>updateWide({autoFit:v})}/>
+                </label>
+
                 <WideFormatDiagram
-                  rollWidth={wide.rollWidth} cols={wide.colsAcross} gap={wide.gap}
+                  sheetW={wide.sheetW} margin={wide.margin} cols={wide.colsAcross} gap={wide.gap}
                   labelW={wideLabelW} labelH={wideLabelH} overflow={wideOverflow}
                 />
 
                 {selectedBins.length>0 && !wideOverflow && (
                   <p className="text-xs text-muted-foreground">
-                    Strip ≈ <strong className="text-foreground">{wideStripH.toFixed(1)}"</strong> long for {selectedBins.length} label{selectedBins.length!==1?'s':''}
-                    {wideStripH>wide.maxLength && <> — will split into strips of {wide.maxLength}"</>}
+                    {wideSheets.length} sheet{wideSheets.length!==1?'s':''} · {wide.colsAcross} × {wideRowsPer} labels per sheet ·
+                    {wide.autoFit
+                      ? <> last sheet ≈ <strong className="text-foreground">{Math.max(...wideSheetHeights).toFixed(1)}"</strong> tall</>
+                      : <> {wide.sheetLen}" per sheet</>}
                   </p>
                 )}
               </div>
@@ -854,21 +880,24 @@ export default function LabelsPage() {
               </div>
             ))}
 
-            {mode==='wideformat'&&!wideOverflow&&(()=>{
-              const pH=Math.max(1,Math.min(wideStripH,wide.maxLength))
+            {mode==='wideformat'&&!wideOverflow&&(wideSheets.length?wideSheets:[[]]).map((pg,si)=>{
+              const sheetH=wideSheetHeights[si]||1
+              const lay=pickLayout(wideLabelW,wideLabelH)
               return (
-                <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'8px'}}>
-                  <p style={{color:'#475569',fontSize:'11px'}}>{wide.rollWidth}" wide · {wideStripH.toFixed(1)}" long · {wide.colsAcross} across · label {wideLabelW.toFixed(2)}" × {wideLabelH.toFixed(2)}" ({WIDE_SHAPES[wide.shape].label})</p>
-                  <div style={{width:`${wide.rollWidth*96*scale}px`,height:`${pH*96*scale}px`,position:'relative',flexShrink:0}}>
+                <div key={si} style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'8px'}}>
+                  <p style={{color:'#475569',fontSize:'11px'}}>Sheet {si+1} of {Math.max(1,wideSheets.length)} · {wide.sheetW}" × {sheetH.toFixed(1)}" · label {wideLabelW.toFixed(2)}" × {wideLabelH.toFixed(2)}" ({WIDE_SHAPES[wide.shape].label})</p>
+                  <div style={{width:`${wide.sheetW*96*scale}px`,height:`${sheetH*96*scale}px`,position:'relative',flexShrink:0}}>
                     <div style={{position:'absolute',top:0,left:0,transformOrigin:'top left',transform:`scale(${scale})`}}>
-                      <div style={{width:`${wide.rollWidth}in`,height:`${pH}in`,backgroundColor:'white',padding:'0 0.25in 0.1in',boxSizing:'border-box',boxShadow:'0 8px 40px rgba(0,0,0,0.5)',display:'grid',gridTemplateColumns:`repeat(${wide.colsAcross},${wideLabelW}in)`,gap:`${wide.gap}in`,alignContent:'start',paddingTop:'0.1in'}}>
-                        {selectedBins.map(bin=><LabelCard key={bin.id} bin={bin} w={wideLabelW} h={wideLabelH} layout={pickLayout(wideLabelW,wideLabelH)} cut={cut}/>)}
+                      <div style={{width:`${wide.sheetW}in`,height:`${sheetH}in`,backgroundColor:'white',padding:`${wide.margin}in`,boxSizing:'border-box',boxShadow:'0 8px 40px rgba(0,0,0,0.5)'}}>
+                        <div style={{display:'grid',gridTemplateColumns:`repeat(${wide.colsAcross},${wideLabelW}in)`,gap:`${wide.gap}in`,alignContent:'start'}}>
+                          {pg.map(bin=><LabelCard key={bin.id} bin={bin} w={wideLabelW} h={wideLabelH} layout={lay} cut={cut}/>)}
+                        </div>
                       </div>
                     </div>
                   </div>
                 </div>
               )
-            })()}
+            })}
 
             {mode==='custom'&&cLw>0&&cLh>0&&customPages.map((pg,pi)=>(
               <div key={pi} style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'8px'}}>
