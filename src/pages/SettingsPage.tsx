@@ -12,7 +12,6 @@ import { Switch } from '@/components/ui/controls'
 
 interface SharedUser {
   id: string
-  sharedWithUserId: string
   email: string
 }
 
@@ -47,20 +46,13 @@ export default function SettingsPage() {
   const loadSharedUsers = async () => {
     const { data } = await supabase
       .from('shared_access')
-      .select('id, shared_with_user_id')
+      .select('id, email, shared_with_user_id')
       .eq('owner_id', user!.id)
     if (data) {
-      const usersWithEmail = await Promise.all(
-        data.map(async (row) => {
-          const { data: userData } = await supabase.auth.admin?.getUserById(row.shared_with_user_id).catch(() => ({ data: null })) || { data: null }
-          return {
-            id: row.id,
-            sharedWithUserId: row.shared_with_user_id,
-            email: (userData as { user?: { email?: string } })?.user?.email || row.shared_with_user_id,
-          }
-        })
-      )
-      setSharedUsers(usersWithEmail)
+      setSharedUsers(data.map(row => ({
+        id: row.id,
+        email: row.email || row.shared_with_user_id,
+      })))
     }
   }
 
@@ -93,7 +85,7 @@ export default function SettingsPage() {
       if (!userId) { toast('User not found with that email', 'error'); return }
       if (userId === user!.id) { toast("You can't share with yourself", 'error'); return }
 
-      const { error: accessError } = await supabase.from('shared_access').insert({ owner_id: user!.id, shared_with_user_id: userId })
+      const { error: accessError } = await supabase.from('shared_access').insert({ owner_id: user!.id, shared_with_user_id: userId, email: shareEmail.trim() })
       if (accessError) { toast('Already shared with this user', 'error'); return }
 
       // The viewer role is assigned server-side by the shared_access trigger.

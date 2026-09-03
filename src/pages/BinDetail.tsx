@@ -97,7 +97,7 @@ export default function BinDetail() {
               <Button variant="outline" size="sm" onClick={() => navigate(`/bin/${bin.id}/edit`)}>
                 <Edit className="h-4 w-4" /> Edit
               </Button>
-              <Button variant="outline" size="sm" onClick={() => window.print()}>
+              <Button variant="outline" size="sm" onClick={() => navigate(`/labels?bin=${bin.id}`)}>
                 <Printer className="h-4 w-4" /> Print Label
               </Button>
               <Button variant="outline" size="sm" className="text-destructive hover:text-destructive ml-auto" onClick={() => setDeleteDialogOpen(true)}>

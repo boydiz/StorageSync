@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Printer, Tag, X, ChevronDown, ChevronUp, Scissors } from 'lucide-react'
 import { QRCodeSVG } from 'qrcode.react'
 import { useBins } from '@/hooks/useBins'
@@ -390,7 +391,11 @@ function CutContourPanel({cut,setCut}:{cut:CutContourSettings;setCut:(c:CutConto
 
 export default function LabelsPage() {
   const {bins} = useBins()
-  const [selected,setSelected]       = useState<Set<string>>(new Set())
+  const [searchParams] = useSearchParams()
+  const [selected,setSelected]       = useState<Set<string>>(() => {
+    const preselect = searchParams.get('bin')
+    return preselect ? new Set([preselect]) : new Set()
+  })
   const [showPreview,setShowPreview] = useState(false)
   const [mode,setMode]               = useState<PrintMode>('home')
   const [scale,setScale]             = useState(1)
