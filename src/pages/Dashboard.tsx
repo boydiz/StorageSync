@@ -77,9 +77,7 @@ export default function Dashboard() {
                   <div className="p-4">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="font-mono text-xs text-muted-foreground">#{formatBinNumber(bin.binNumber)}</span>
-                        </div>
+                        <div className="font-mono text-xl font-bold leading-none tracking-tight mb-1">#{formatBinNumber(bin.binNumber)}</div>
                         <p className="font-semibold text-sm truncate">{bin.name}</p>
                         {bin.location && (
                           <div className="flex items-center gap-1 mt-1">
@@ -137,9 +135,9 @@ export default function Dashboard() {
                       <p className="text-xs text-muted-foreground mt-0.5">Qty: {item.quantity}</p>
                     </div>
                     {bin && (
-                      <div className="shrink-0 flex items-center gap-1.5 bg-secondary rounded-full px-2 py-0.5">
+                      <div className="shrink-0 flex items-center gap-1.5 bg-secondary rounded-full px-2.5 py-1">
                         <div className="h-2 w-2 rounded-full" style={{ backgroundColor: bin.color }} />
-                        <span className="text-xs font-mono text-muted-foreground">#{formatBinNumber(bin.binNumber)}</span>
+                        <span className="text-sm font-mono font-bold">#{formatBinNumber(bin.binNumber)}</span>
                       </div>
                     )}
                   </div>

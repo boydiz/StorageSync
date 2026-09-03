@@ -79,6 +79,46 @@ function safeColor(value: string): string {
   return /^#[0-9a-fA-F]{3,8}$/.test(String(value ?? '').trim()) ? value.trim() : '#000000'
 }
 
+// ─── Label geometry ───────────────────────────────────────────────────────────
+// One source of truth for label sizing, shared by the on-screen preview
+// (LabelCard) and the print HTML (buildLabelHtml). The bin number and the QR
+// code are the primary elements — big number to read across a room, big QR to
+// scan from a distance. Name/location/description are supporting text.
+
+type LabelLayout = 'stack' | 'split'
+
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
+
+// Landscape-ish labels put text and QR side by side; otherwise stack them.
+function pickLayout(w: number, h: number): LabelLayout {
+  return w / h >= 1.35 ? 'split' : 'stack'
+}
+
+// Rough QR scan distance: a QR reads from about 10x its width.
+function scanDistanceLabel(qrInches: number): string {
+  const ft = (qrInches * 10) / 12
+  return ft < 1 ? `~${Math.round(qrInches * 10)}in` : `~${ft.toFixed(1)} ft`
+}
+
+function labelMetrics(w: number, h: number, layout: LabelLayout) {
+  const pad = clamp(Math.min(w, h) * 0.07, 0.05, 0.3)          // inches
+  const stripePx = clamp(h * 96 * 0.04, 4, 22)
+  const innerH = h - pad * 2 - stripePx / 96
+
+  // Bin number — full label width, capped so it can't swallow a short label.
+  const numPx = clamp((w - pad * 2) * 96 * 0.3, 13, innerH * 96 * 0.4)
+  const namePx = clamp(numPx * 0.4, 9, 84)
+  const descPx = clamp(numPx * 0.3, 7, 34)
+  const numRowIn = (numPx * 1.05) / 96
+
+  // QR — fills whatever the number row leaves, biased large.
+  const qrIn = layout === 'split'
+    ? clamp(innerH - numRowIn - pad, 0.5, (w - pad * 3) * 0.55)
+    : clamp(innerH - numRowIn - pad, 0.5, w - pad * 2)
+
+  return { pad, stripePx, numPx, namePx, descPx, qrIn, qrPx: Math.round(qrIn * 96) }
+}
+
 // ─── Cut Contour SVG Overlay ──────────────────────────────────────────────────
 // Returns an SVG element that sits on top of the label as an overlay
 // Uses a rounded rectangle with the specified stroke
@@ -143,35 +183,32 @@ function cutContourSvgStr(w: number, h: number, cut: CutContourSettings): string
 
 // ─── Label Card ────────────────────────────────────────────────────────────────
 
-function LabelCard({ bin, w, h, isLayout3=false, cut }: {
-  bin: BinData; w: number; h: number; isLayout3?: boolean; cut: CutContourSettings
+function LabelCard({ bin, w, h, layout, cut }: {
+  bin: BinData; w: number; h: number; layout: LabelLayout; cut: CutContourSettings
 }) {
-  const qrUrl  = `${window.location.origin}/bin/${bin.id}`
-  const area   = w * h
-  const stripeH= area>20?'18px':area>8?'13px':area>4?'9px':'7px'
-  const nameSz = area>30?'3rem':area>15?'2.2rem':area>8?'1.6rem':area>4?'1.1rem':'0.85rem'
-  const numSz  = area>30?'2rem':area>15?'1.5rem':area>8?'1.1rem':area>4?'0.85rem':'0.7rem'
-  const descSz = area>15?'0.85rem':area>8?'0.72rem':'0.6rem'
-  const pad    = area>15?'0.8rem':area>8?'0.55rem':area>4?'0.4rem':'0.3rem'
-  const qrFrac = isLayout3?0.74:area>20?0.58:area>8?0.50:0.42
-  const qrPx   = Math.round(qrFrac * Math.min(w,h) * 96)
+  const qrUrl = `${window.location.origin}/bin/${bin.id}`
+  const m = labelMetrics(w, h, layout)
+  const showDesc = !!bin.description && h >= 2
 
-  const textBlock = (
+  const num = (
+    <div style={{fontFamily:'monospace',fontSize:m.numPx,color:'#0f172a',fontWeight:900,lineHeight:1,letterSpacing:'-0.02em',flexShrink:0}}>
+      #{formatBinNumber(bin.binNumber)}
+    </div>
+  )
+  const text = (
     <>
-      <div style={{fontFamily:'monospace',fontSize:numSz,color:'#1e293b',fontWeight:900,lineHeight:1,letterSpacing:'-0.01em'}}>
-        #{formatBinNumber(bin.binNumber)}
-      </div>
-      <div style={{fontWeight:900,fontSize:nameSz,color:'#0f172a',lineHeight:1.1,wordBreak:'break-word',marginTop:'3px'}}>
+      <div style={{fontWeight:800,fontSize:m.namePx,color:'#0f172a',lineHeight:1.1,wordBreak:'break-word',marginTop:m.namePx*0.25}}>
         {bin.name}
       </div>
-      {bin.location&&<div style={{fontSize:descSz,color:'#475569',marginTop:'4px',fontWeight:500}}>{bin.location}</div>}
-      {bin.description&&area>8&&(
-        <div style={{fontSize:descSz,color:'#94a3b8',marginTop:'3px',overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical' as const}}>
+      {bin.location&&<div style={{fontSize:m.descPx,color:'#475569',marginTop:m.descPx*0.4,fontWeight:600}}>{bin.location}</div>}
+      {showDesc&&(
+        <div style={{fontSize:m.descPx,color:'#94a3b8',marginTop:m.descPx*0.3,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical' as const}}>
           {bin.description}
         </div>
       )}
     </>
   )
+  const qr = <div style={{flexShrink:0,lineHeight:0}}><QRCodeSVG value={qrUrl} size={m.qrPx}/></div>
 
   return (
     // Outer wrapper is NOT clipped so the cut contour (which sits outside the
@@ -179,20 +216,21 @@ function LabelCard({ bin, w, h, isLayout3=false, cut }: {
     // rounded-corner clip of the color stripe.
     <div style={{position:'relative',width:`${w}in`,height:`${h}in`,pageBreakInside:'avoid',boxSizing:'border-box'}}>
       <div style={{width:'100%',height:'100%',border:'1.5px solid #cbd5e1',borderRadius:'8px',overflow:'hidden',backgroundColor:'white',display:'flex',flexDirection:'column',boxSizing:'border-box'}}>
-        <div style={{height:stripeH,backgroundColor:bin.color,flexShrink:0,WebkitPrintColorAdjust:'exact',printColorAdjust:'exact'} as React.CSSProperties}/>
-        {isLayout3?(
-          <div style={{flex:1,display:'flex',flexDirection:'row',padding:pad,gap:'0.5rem',overflow:'hidden',alignItems:'center'}}>
-            <div style={{flex:1,overflow:'hidden'}}>{textBlock}</div>
-            <div style={{flexShrink:0}}><QRCodeSVG value={qrUrl} size={qrPx}/></div>
-          </div>
-        ):(
-          <div style={{flex:1,display:'flex',flexDirection:'column',padding:pad,gap:'3px',overflow:'hidden'}}>
-            <div style={{flexShrink:0}}>{textBlock}</div>
-            <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center'}}>
-              <QRCodeSVG value={qrUrl} size={qrPx}/>
+        <div style={{height:m.stripePx,backgroundColor:bin.color,flexShrink:0,WebkitPrintColorAdjust:'exact',printColorAdjust:'exact'} as React.CSSProperties}/>
+        <div style={{flex:1,display:'flex',flexDirection:'column',padding:`${m.pad}in`,overflow:'hidden'}}>
+          {num}
+          {layout==='split'?(
+            <div style={{flex:1,display:'flex',flexDirection:'row',gap:`${m.pad}in`,alignItems:'center',overflow:'hidden',marginTop:m.pad*48}}>
+              <div style={{flex:1,overflow:'hidden'}}>{text}</div>
+              {qr}
             </div>
-          </div>
-        )}
+          ):(
+            <>
+              <div style={{flexShrink:0}}>{text}</div>
+              <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',minHeight:0,marginTop:m.pad*48}}>{qr}</div>
+            </>
+          )}
+        </div>
       </div>
       <CutContourOverlay w={w} h={h} cut={cut} />
     </div>
@@ -201,36 +239,38 @@ function LabelCard({ bin, w, h, isLayout3=false, cut }: {
 
 // ─── Print HTML Helpers ───────────────────────────────────────────────────────
 
-function buildLabelHtml(bin: BinData, w: number, h: number, cut: CutContourSettings, isLayout3=false): string {
+function buildLabelHtml(bin: BinData, w: number, h: number, cut: CutContourSettings, layout: LabelLayout): string {
   const qrUrl  = `${window.location.origin}/bin/${bin.id}`
-  const area   = w * h
-  const stripeH= area>20?'18px':area>8?'13px':area>4?'9px':'7px'
-  const nameSz = area>30?'3rem':area>15?'2.2rem':area>8?'1.6rem':area>4?'1.1rem':'0.85rem'
-  const numSz  = area>30?'2rem':area>15?'1.5rem':area>8?'1.1rem':area>4?'0.85rem':'0.7rem'
-  const descSz = area>15?'0.85rem':area>8?'0.72rem':'0.6rem'
-  const pad    = area>15?'0.8rem':area>8?'0.55rem':area>4?'0.4rem':'0.3rem'
-  const qrFrac = isLayout3?0.74:area>20?0.58:area>8?0.50:0.42
-  const qrPx   = Math.round(qrFrac * Math.min(w,h) * 96)
-  const qrSvg  = ReactDOMServer.renderToStaticMarkup(<QRCodeSVG value={qrUrl} size={qrPx}/>)
+  const m      = labelMetrics(w, h, layout)
+  const qrSvg  = ReactDOMServer.renderToStaticMarkup(<QRCodeSVG value={qrUrl} size={m.qrPx}/>)
   const numStr = String(bin.binNumber).padStart(3,'0')
   const stripe = safeColor(bin.color)
+  const showDesc = bin.description && h >= 2
 
+  const numHtml = `<div style="font-family:monospace;font-size:${m.numPx}px;color:#0f172a;font-weight:900;line-height:1;letter-spacing:-0.02em;flex-shrink:0">#${numStr}</div>`
   const textHtml = `
-    <div style="font-family:monospace;font-size:${numSz};color:#1e293b;font-weight:900;line-height:1;letter-spacing:-0.01em">#${numStr}</div>
-    <div style="font-weight:900;font-size:${nameSz};color:#0f172a;line-height:1.1;word-break:break-word;margin-top:3px">${escapeHtml(bin.name)}</div>
-    ${bin.location?`<div style="font-size:${descSz};color:#475569;margin-top:4px;font-weight:500">${escapeHtml(bin.location)}</div>`:''}
-    ${bin.description&&area>8?`<div style="font-size:${descSz};color:#94a3b8;margin-top:3px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${escapeHtml(bin.description)}</div>`:''}
+    <div style="font-weight:800;font-size:${m.namePx}px;color:#0f172a;line-height:1.1;word-break:break-word;margin-top:${m.namePx*0.25}px">${escapeHtml(bin.name)}</div>
+    ${bin.location?`<div style="font-size:${m.descPx}px;color:#475569;margin-top:${m.descPx*0.4}px;font-weight:600">${escapeHtml(bin.location)}</div>`:''}
+    ${showDesc?`<div style="font-size:${m.descPx}px;color:#94a3b8;margin-top:${m.descPx*0.3}px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${escapeHtml(bin.description)}</div>`:''}
   `
-  const inner = isLayout3
-    ? `<div style="flex:1;overflow:hidden">${textHtml}</div><div style="flex-shrink:0">${qrSvg}</div>`
-    : `<div style="flex-shrink:0">${textHtml}</div><div style="flex:1;display:flex;align-items:center;justify-content:center">${qrSvg}</div>`
+  const qrHtml = `<div style="flex-shrink:0;line-height:0">${qrSvg}</div>`
+
+  const body = layout === 'split'
+    ? `${numHtml}
+       <div style="flex:1;display:flex;flex-direction:row;gap:${m.pad}in;align-items:center;overflow:hidden;margin-top:${m.pad/2}in">
+         <div style="flex:1;overflow:hidden">${textHtml}</div>
+         ${qrHtml}
+       </div>`
+    : `${numHtml}
+       <div style="flex-shrink:0">${textHtml}</div>
+       <div style="flex:1;display:flex;align-items:center;justify-content:center;min-height:0;margin-top:${m.pad/2}in">${qrHtml}</div>`
 
   return `
     <div style="position:relative;width:${w}in;height:${h}in;page-break-inside:avoid;box-sizing:border-box;">
       <div style="width:100%;height:100%;border:1.5px solid #cbd5e1;border-radius:8px;overflow:hidden;background:white;display:flex;flex-direction:column;box-sizing:border-box;">
-        <div style="height:${stripeH};background:${stripe};flex-shrink:0;-webkit-print-color-adjust:exact;print-color-adjust:exact;color-adjust:exact"></div>
-        <div style="flex:1;display:flex;flex-direction:${isLayout3?'row':'column'};padding:${pad};gap:${isLayout3?'0.5rem':'3px'};overflow:hidden;${isLayout3?'align-items:center':''}">
-          ${inner}
+        <div style="height:${m.stripePx}px;background:${stripe};flex-shrink:0;-webkit-print-color-adjust:exact;print-color-adjust:exact;color-adjust:exact"></div>
+        <div style="flex:1;display:flex;flex-direction:column;padding:${m.pad}in;overflow:hidden">
+          ${body}
         </div>
       </div>
       ${cutContourSvgStr(w,h,cut)}
@@ -264,21 +304,21 @@ function openPrint(html: string) {
 function buildHomePrint(bins:BinData[], lpp:1|2|3|4|5|6, cut:CutContourSettings) {
   const {cols,rows}=HOME_GRID[lpp], gap=0.12, pw=7.5, ph=10
   const lw=(pw-gap*(cols-1))/cols, lh=(ph-gap*(rows-1))/rows
-  const perPage=cols*rows, isL3=lpp===3
+  const perPage=cols*rows, layout:LabelLayout=lpp===3?'split':'stack'
   const pages:BinData[][]=[]
   for(let i=0;i<bins.length;i+=perPage) pages.push(bins.slice(i,i+perPage))
   const body=pages.map((pg,pi)=>`
     <div style="display:grid;grid-template-columns:repeat(${cols},${lw}in);grid-template-rows:repeat(${rows},${lh}in);gap:${gap}in;width:${pw}in;height:${ph}in;${pi<pages.length-1?'page-break-after:always':''}">
-      ${pg.map(b=>buildLabelHtml(b,lw,lh,cut,isL3)).join('')}
+      ${pg.map(b=>buildLabelHtml(b,lw,lh,cut,layout)).join('')}
     </div>`).join('')
   return printHtmlWrapper(body,'letter portrait','0.5in',cut)
 }
 
 function buildThermalPrint(bins:BinData[], lw:number, lh:number, mH:number, mV:number, cut:CutContourSettings) {
-  const isL=lw>lh
+  const layout=pickLayout(lw-mH*2,lh-mV*2)
   const body=bins.map((b,i)=>`
     <div style="width:${lw}in;height:${lh}in;padding:${mV}in ${mH}in;box-sizing:border-box;${i<bins.length-1?'page-break-after:always':''}">
-      ${buildLabelHtml(b,lw-mH*2,lh-mV*2,cut,isL)}
+      ${buildLabelHtml(b,lw-mH*2,lh-mV*2,cut,layout)}
     </div>`).join('')
   return printHtmlWrapper(body,`${lw}in ${lh}in`,'0',cut)
 }
@@ -289,11 +329,12 @@ function buildWideFormatPrint(bins:BinData[], rollW:number, labelW:number, label
   const perStrip=cols*Math.floor((maxLen+gap)/(labelH+gap))
   const pages:BinData[][]=[]
   for(let i=0;i<bins.length;i+=perStrip) pages.push(bins.slice(i,i+perStrip))
+  const layout=pickLayout(labelW,labelH)
   const body=pages.map((pg,pi)=>{
     const pgRows=Math.ceil(pg.length/cols)
     const pgH=pgRows*labelH+(pgRows-1)*gap
     return `<div style="width:${usable}in;height:${pgH}in;display:grid;grid-template-columns:repeat(${cols},${labelW}in);gap:${gap}in;${pi<pages.length-1?'page-break-after:always':''}">
-      ${pg.map(b=>buildLabelHtml(b,labelW,labelH,cut)).join('')}
+      ${pg.map(b=>buildLabelHtml(b,labelW,labelH,cut,layout)).join('')}
     </div>`
   }).join('')
   return printHtmlWrapper(body,`${rollW}in auto`,'0 0.25in',cut)
@@ -302,12 +343,12 @@ function buildWideFormatPrint(bins:BinData[], rollW:number, labelW:number, label
 function buildCustomPrint(bins:BinData[], s:CustomSettings, cut:CutContourSettings) {
   const lw=(s.pageW-s.marginH*2-s.gap*(s.cols-1))/s.cols
   const lh=(s.pageH-s.marginV*2-s.gap*(s.rows-1))/s.rows
-  const perPage=s.cols*s.rows
+  const perPage=s.cols*s.rows, layout=pickLayout(lw,lh)
   const pages:BinData[][]=[]
   for(let i=0;i<bins.length;i+=perPage) pages.push(bins.slice(i,i+perPage))
   const body=pages.map((pg,pi)=>`
     <div style="width:${s.pageW-s.marginH*2}in;height:${s.pageH-s.marginV*2}in;display:grid;grid-template-columns:repeat(${s.cols},${lw}in);grid-template-rows:repeat(${s.rows},${lh}in);gap:${s.gap}in;${pi<pages.length-1?'page-break-after:always':''}">
-      ${pg.map(b=>buildLabelHtml(b,lw,lh,cut)).join('')}
+      ${pg.map(b=>buildLabelHtml(b,lw,lh,cut,layout)).join('')}
     </div>`).join('')
   return printHtmlWrapper(body,`${s.pageW}in ${s.pageH}in`,`${s.marginV}in ${s.marginH}in`,cut)
 }
@@ -625,7 +666,7 @@ export default function LabelsPage() {
             <label key={bin.id} className={`flex items-center gap-3 rounded-xl border px-4 py-3 cursor-pointer transition-colors ${selected.has(bin.id)?'border-primary/50 bg-primary/5':'bg-card hover:bg-accent'}`}>
               <Checkbox checked={selected.has(bin.id)} onCheckedChange={()=>toggleBin(bin.id)}/>
               <div className="h-3 w-3 rounded-full shrink-0" style={{backgroundColor:bin.color}}/>
-              <span className="font-mono text-xs text-muted-foreground">#{formatBinNumber(bin.binNumber)}</span>
+              <span className="font-mono text-sm font-bold">#{formatBinNumber(bin.binNumber)}</span>
               <span className="text-sm font-medium flex-1">{bin.name}</span>
               {bin.location&&<span className="text-xs text-muted-foreground hidden sm:block">{bin.location}</span>}
             </label>
@@ -669,7 +710,7 @@ export default function LabelsPage() {
                 <div style={{width:`${8.5*96*scale}px`,height:`${11*96*scale}px`,position:'relative',flexShrink:0}}>
                   <div style={{position:'absolute',top:0,left:0,transformOrigin:'top left',transform:`scale(${scale})`}}>
                     <div style={{width:'8.5in',height:'11in',backgroundColor:'white',padding:'0.5in',boxSizing:'border-box',boxShadow:'0 8px 40px rgba(0,0,0,0.5)',display:'grid',gridTemplateColumns:`repeat(${hCols},${hLw}in)`,gridTemplateRows:`repeat(${hRows},${hLh}in)`,gap:`${hGap}in`}}>
-                      {pg.map(bin=><LabelCard key={bin.id} bin={bin} w={hLw} h={hLh} isLayout3={homeLpp===3} cut={cut}/>)}
+                      {pg.map(bin=><LabelCard key={bin.id} bin={bin} w={hLw} h={hLh} layout={homeLpp===3?'split':'stack'} cut={cut}/>)}
                     </div>
                   </div>
                 </div>
@@ -682,7 +723,7 @@ export default function LabelsPage() {
                 <div style={{width:`${thermal.labelW*96*scale}px`,height:`${thermal.labelH*96*scale}px`,position:'relative',flexShrink:0}}>
                   <div style={{position:'absolute',top:0,left:0,transformOrigin:'top left',transform:`scale(${scale})`}}>
                     <div style={{width:`${thermal.labelW}in`,height:`${thermal.labelH}in`,backgroundColor:'white',padding:`${thermal.marginV}in ${thermal.marginH}in`,boxSizing:'border-box',boxShadow:'0 8px 40px rgba(0,0,0,0.5)'}}>
-                      <LabelCard bin={bin} w={thermal.labelW-thermal.marginH*2} h={thermal.labelH-thermal.marginV*2} isLayout3={thermal.labelW>thermal.labelH} cut={cut}/>
+                      <LabelCard bin={bin} w={thermal.labelW-thermal.marginH*2} h={thermal.labelH-thermal.marginV*2} layout={pickLayout(thermal.labelW-thermal.marginH*2,thermal.labelH-thermal.marginV*2)} cut={cut}/>
                     </div>
                   </div>
                 </div>
@@ -697,7 +738,7 @@ export default function LabelsPage() {
                   <div style={{width:`${wide.rollWidth*96*scale}px`,height:`${pH*96*scale}px`,position:'relative',flexShrink:0}}>
                     <div style={{position:'absolute',top:0,left:0,transformOrigin:'top left',transform:`scale(${scale})`}}>
                       <div style={{width:`${wide.rollWidth}in`,height:`${pH}in`,backgroundColor:'white',padding:'0 0.25in 0.1in',boxSizing:'border-box',boxShadow:'0 8px 40px rgba(0,0,0,0.5)',display:'grid',gridTemplateColumns:`repeat(${wide.colsAcross},${wide.labelW}in)`,gap:`${wide.gap}in`,alignContent:'start',paddingTop:'0.1in'}}>
-                        {selectedBins.map(bin=><LabelCard key={bin.id} bin={bin} w={wide.labelW} h={wide.labelH} cut={cut}/>)}
+                        {selectedBins.map(bin=><LabelCard key={bin.id} bin={bin} w={wide.labelW} h={wide.labelH} layout={pickLayout(wide.labelW,wide.labelH)} cut={cut}/>)}
                       </div>
                     </div>
                   </div>
@@ -711,7 +752,7 @@ export default function LabelsPage() {
                 <div style={{width:`${custom.pageW*96*scale}px`,height:`${custom.pageH*96*scale}px`,position:'relative',flexShrink:0}}>
                   <div style={{position:'absolute',top:0,left:0,transformOrigin:'top left',transform:`scale(${scale})`}}>
                     <div style={{width:`${custom.pageW}in`,height:`${custom.pageH}in`,backgroundColor:'white',padding:`${custom.marginV}in ${custom.marginH}in`,boxSizing:'border-box',boxShadow:'0 8px 40px rgba(0,0,0,0.5)',display:'grid',gridTemplateColumns:`repeat(${custom.cols},${cLw}in)`,gridTemplateRows:`repeat(${custom.rows},${cLh}in)`,gap:`${custom.gap}in`}}>
-                      {pg.map(bin=><LabelCard key={bin.id} bin={bin} w={cLw} h={cLh} cut={cut}/>)}
+                      {pg.map(bin=><LabelCard key={bin.id} bin={bin} w={cLw} h={cLh} layout={pickLayout(cLw,cLh)} cut={cut}/>)}
                     </div>
                   </div>
                 </div>

@@ -112,7 +112,7 @@ export default function ItemsPage() {
                   {bin && (
                     <button onClick={() => navigate(`/bin/${bin.id}`)} className="flex items-center gap-1.5 bg-secondary rounded-full px-2.5 py-1 hover:bg-accent transition-colors">
                       <div className="h-2 w-2 rounded-full" style={{ backgroundColor: bin.color }} />
-                      <span className="text-xs font-mono">#{formatBinNumber(bin.binNumber)}</span>
+                      <span className="text-sm font-mono font-bold">#{formatBinNumber(bin.binNumber)}</span>
                     </button>
                   )}
                 </div>
@@ -136,7 +136,7 @@ export default function ItemsPage() {
               >
                 <input type="radio" name="targetBin" value={bin.id} checked={targetBinId === bin.id} onChange={() => setTargetBinId(bin.id)} className="hidden" />
                 <div className="h-3 w-3 rounded-full" style={{ backgroundColor: bin.color }} />
-                <span className="font-mono text-xs text-muted-foreground">#{formatBinNumber(bin.binNumber)}</span>
+                <span className="font-mono text-sm font-bold">#{formatBinNumber(bin.binNumber)}</span>
                 <span className="text-sm font-medium">{bin.name}</span>
               </label>
             ))}

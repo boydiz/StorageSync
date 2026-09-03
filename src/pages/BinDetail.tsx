@@ -68,10 +68,8 @@ export default function BinDetail() {
         <CardContent className="pt-5">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
-              <div className="flex items-center gap-2 mb-1">
-                <Badge variant="secondary" className="font-mono">#{formatBinNumber(bin.binNumber)}</Badge>
-              </div>
-              <h1 className="font-display font-bold text-2xl">{bin.name}</h1>
+              <div className="font-mono font-bold text-3xl md:text-4xl leading-none tracking-tight">#{formatBinNumber(bin.binNumber)}</div>
+              <h1 className="font-display font-bold text-xl mt-1.5">{bin.name}</h1>
               {bin.location && (
                 <div className="flex items-center gap-1.5 mt-2 text-muted-foreground">
                   <MapPin className="h-4 w-4 shrink-0" />
