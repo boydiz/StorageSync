@@ -127,32 +127,31 @@ type LabelFields = ReturnType<typeof labelFields>
 //   [stripe] [ NAME band, full width ] [ body ]
 //   body — stack:  #number / description / items / QR (fills rest)
 //   body — split:  left col (#number / description / items) | QR (full height)
-function labelMetrics(w: number, h: number, layout: LabelLayout, f: LabelFields) {
-  const pad = clamp(Math.min(w, h) * 0.055, 0.04, 0.24)
-  const stripePx = clamp(h * 96 * 0.03, 4, 18)
+function labelMetrics(w: number, h: number, layout: LabelLayout, _f: LabelFields) {
+  const pad = clamp(Math.min(w, h) * 0.05, 0.04, 0.22)
+  const stripePx = clamp(h * 96 * 0.028, 4, 16)
   const innerW = w - pad * 2
   const innerWpx = innerW * 96
   const innerHpx = (h - pad * 2) * 96 - stripePx
 
-  // Name band across the top — reserve ~1.6 lines for QR sizing.
-  const namePx = clamp(innerWpx * 0.15, 9, 42)
-  const nameBandPx = namePx * 1.2 * 1.6 + 4
+  // Name band across the top. One line on short labels, two when there's room;
+  // capped so it can't eat a small label.
+  const nameLines = h >= 2.4 ? 2 : 1
+  const namePx = clamp(innerWpx * 0.14, 8, 40)
+  const nameBandPx = Math.min(namePx * 1.2 * nameLines + 3, innerHpx * 0.26)
 
   const bodyHpx = innerHpx - nameBandPx
-  const colW = layout === 'split' ? innerW * 0.52 : innerW
+  const colW = layout === 'split' ? innerW * 0.5 : innerW
 
-  const numPx = clamp(colW * 96 * 0.30, 12, bodyHpx * (layout === 'split' ? 0.5 : 0.42))
-  const bodyPx = clamp(numPx * 0.3, 6.5, 18)
+  const numPx = clamp(colW * 96 * 0.30, 11, bodyHpx * 0.4)
+  const numRowPx = numPx * 1.16
+  const bodyPx = clamp(numPx * 0.3, 6, 16)
 
-  // Text under the number (stack) / in the left column (split).
-  const belowNumPx =
-    numPx * 1.15 +
-    (f.showDesc  ? bodyPx * 1.3 * 2 + 3 : 0) +   // ~2 lines
-    (f.showItems ? bodyPx * 1.25 * 3 + 3 : 0)    // ~3 lines
-
+  // QR is priority: it gets a fixed share of the body, and the description/
+  // item text is what shrinks (clipped) when space is tight — not the QR.
   const qrPx = layout === 'split'
-    ? clamp(Math.min(bodyHpx - pad * 8, innerWpx * 0.46), 44, bodyHpx)
-    : clamp(bodyHpx - belowNumPx - pad * 20, 44, innerWpx)
+    ? clamp(Math.min(bodyHpx - 4, innerWpx * 0.5), 60, bodyHpx)
+    : clamp(Math.min(bodyHpx * 0.58, innerWpx), 60, Math.max(60, bodyHpx - numRowPx - pad * 10))
 
   return { pad, stripePx, namePx, numPx, bodyPx, qrPx: Math.round(qrPx) }
 }
@@ -278,8 +277,8 @@ function LabelCard({ bin, w, h, layout, cut }: {
           ):(
             <>
               <div style={{flexShrink:0,marginTop:m.pad*20}}>{num}</div>
-              <div style={{flexShrink:0,minHeight:0,marginTop:m.bodyPx*0.3}}>{detail}</div>
-              <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',minHeight:0,overflow:'hidden',marginTop:m.pad*24}}>{qr}</div>
+              <div style={{flex:'0 1 auto',minHeight:0,overflow:'hidden',marginTop:m.bodyPx*0.3}}>{detail}</div>
+              <div style={{flex:'1 0 auto',display:'flex',alignItems:'center',justifyContent:'center',minHeight:0,overflow:'hidden',marginTop:m.pad*20}}>{qr}</div>
             </>
           )}
         </div>
@@ -319,8 +318,8 @@ function buildLabelHtml(bin: BinData, w: number, h: number, cut: CutContourSetti
          <div style="flex-shrink:0;align-self:center;max-width:48%;max-height:100%;display:flex">${qrHtml}</div>
        </div>`
     : `<div style="flex-shrink:0;margin-top:${m.pad*0.42}in">${numHtml}</div>
-       <div style="flex-shrink:0;min-height:0;margin-top:${m.bodyPx*0.3}px">${detailHtml}</div>
-       <div style="flex:1;display:flex;align-items:center;justify-content:center;min-height:0;overflow:hidden;margin-top:${m.pad*0.5}in">${qrHtml}</div>`
+       <div style="flex:0 1 auto;min-height:0;overflow:hidden;margin-top:${m.bodyPx*0.3}px">${detailHtml}</div>
+       <div style="flex:1 0 auto;display:flex;align-items:center;justify-content:center;min-height:0;overflow:hidden;margin-top:${m.pad*0.42}in">${qrHtml}</div>`
 
   return `
     <div style="position:relative;width:${w}in;height:${h}in;page-break-inside:avoid;box-sizing:border-box;">
@@ -335,7 +334,8 @@ function buildLabelHtml(bin: BinData, w: number, h: number, cut: CutContourSetti
     </div>`
 }
 
-function printHtmlWrapper(body: string, pageSize: string, margin: string, cut: CutContourSettings): string {
+// `pageCss` is the full @page rule block(s) for this document.
+function printHtmlWrapper(body: string, pageCss: string, cut: CutContourSettings): string {
   const swatchComment = String(cut.swatchName ?? '').replace(/[*/<>]/g, '')
   const swatchCss = cut.enabled
     ? `/* Cut contour swatch: ${swatchComment} = ${safeColor(cut.color)} */\n    .cut-contour { stroke: ${safeColor(cut.color)}; }`
@@ -344,7 +344,7 @@ function printHtmlWrapper(body: string, pageSize: string, margin: string, cut: C
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
     html,body{background:white;-webkit-print-color-adjust:exact;print-color-adjust:exact;color-adjust:exact}
-    @page{size:${pageSize};margin:${margin}}
+    ${pageCss}
     ${swatchCss}
   </style></head><body>
   ${body}
@@ -369,7 +369,7 @@ function buildHomePrint(bins:BinData[], lpp:1|2|3|4|5|6, cut:CutContourSettings)
     <div style="display:grid;grid-template-columns:repeat(${cols},${lw}in);grid-template-rows:repeat(${rows},${lh}in);gap:${gap}in;width:${pw}in;height:${ph}in;${pi<pages.length-1?'page-break-after:always':''}">
       ${pg.map(b=>buildLabelHtml(b,lw,lh,cut,layout)).join('')}
     </div>`).join('')
-  return printHtmlWrapper(body,'letter portrait','0.5in',cut)
+  return printHtmlWrapper(body,'@page{size:letter portrait;margin:0.5in}',cut)
 }
 
 function buildThermalPrint(bins:BinData[], lw:number, lh:number, mH:number, mV:number, cut:CutContourSettings) {
@@ -378,7 +378,7 @@ function buildThermalPrint(bins:BinData[], lw:number, lh:number, mH:number, mV:n
     <div style="width:${lw}in;height:${lh}in;padding:${mV}in ${mH}in;box-sizing:border-box;${i<bins.length-1?'page-break-after:always':''}">
       ${buildLabelHtml(b,lw-mH*2,lh-mV*2,cut,layout)}
     </div>`).join('')
-  return printHtmlWrapper(body,`${lw}in ${lh}in`,'0',cut)
+  return printHtmlWrapper(body,`@page{size:${lw}in ${lh}in;margin:0}`,cut)
 }
 
 function wideRowsPerSheet(sheetLen:number, labelH:number, gap:number, margin:number): number {
@@ -391,17 +391,21 @@ function buildWideFormatPrint(bins:BinData[], sheetW:number, sheetLen:number, co
   for(let i=0;i<bins.length;i+=perSheet) sheets.push(bins.slice(i,i+perSheet))
   if(sheets.length===0) sheets.push([])
   const layout=pickLayout(labelW,labelH)
-  const body=sheets.map((pg,si)=>{
-    const usedRows=Math.max(1,Math.ceil(pg.length/cols))
-    const contentH=usedRows*labelH+(usedRows-1)*gap
-    const sheetH=autoFit ? +(contentH+margin*2).toFixed(3) : sheetLen
-    return `<div style="width:${sheetW}in;height:${sheetH}in;padding:${margin}in;box-sizing:border-box;position:relative;${si<sheets.length-1?'page-break-after:always':''}">
+  const heights=sheets.map(pg=>{
+    const rows=Math.max(1,Math.ceil((pg.length||1)/cols))
+    return autoFit ? +(rows*labelH+(rows-1)*gap+margin*2).toFixed(3) : sheetLen
+  })
+  // One named @page per sheet so each PDF page is exactly the sheet size —
+  // `size: <w> auto` is not honored by Chrome's print-to-PDF and falls back
+  // to Letter, which is what caused the blank tails / wrong layout.
+  const pageCss=sheets.map((_,si)=>`@page wsheet${si}{size:${sheetW}in ${heights[si]}in;margin:0}`).join('\n    ')
+  const body=sheets.map((pg,si)=>
+    `<div style="page:wsheet${si};width:${sheetW}in;height:${heights[si]}in;padding:${margin}in;box-sizing:border-box;position:relative;${si<sheets.length-1?'page-break-after:always':''}">
       <div style="display:grid;grid-template-columns:repeat(${cols},${labelW}in);gap:${gap}in;align-content:start">
         ${pg.map(b=>buildLabelHtml(b,labelW,labelH,cut,layout)).join('')}
       </div>
-    </div>`
-  }).join('')
-  return printHtmlWrapper(body,`${sheetW}in auto`,'0',cut)
+    </div>`).join('')
+  return printHtmlWrapper(body,pageCss,cut)
 }
 
 function buildCustomPrint(bins:BinData[], s:CustomSettings, cut:CutContourSettings) {
@@ -414,7 +418,7 @@ function buildCustomPrint(bins:BinData[], s:CustomSettings, cut:CutContourSettin
     <div style="width:${s.pageW-s.marginH*2}in;height:${s.pageH-s.marginV*2}in;display:grid;grid-template-columns:repeat(${s.cols},${lw}in);grid-template-rows:repeat(${s.rows},${lh}in);gap:${s.gap}in;${pi<pages.length-1?'page-break-after:always':''}">
       ${pg.map(b=>buildLabelHtml(b,lw,lh,cut,layout)).join('')}
     </div>`).join('')
-  return printHtmlWrapper(body,`${s.pageW}in ${s.pageH}in`,`${s.marginV}in ${s.marginH}in`,cut)
+  return printHtmlWrapper(body,`@page{size:${s.pageW}in ${s.pageH}in;margin:${s.marginV}in ${s.marginH}in}`,cut)
 }
 
 // ─── Num Input ────────────────────────────────────────────────────────────────
