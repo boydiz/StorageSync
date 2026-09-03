@@ -174,22 +174,27 @@ function LabelCard({ bin, w, h, isLayout3=false, cut }: {
   )
 
   return (
-    <div style={{width:`${w}in`,height:`${h}in`,border:'1.5px solid #cbd5e1',borderRadius:'8px',overflow:'hidden',backgroundColor:'white',display:'flex',flexDirection:'column',pageBreakInside:'avoid',boxSizing:'border-box',position:'relative'}}>
-      <CutContourOverlay w={w} h={h} cut={cut} />
-      <div style={{height:stripeH,backgroundColor:bin.color,flexShrink:0,WebkitPrintColorAdjust:'exact',printColorAdjust:'exact'} as React.CSSProperties}/>
-      {isLayout3?(
-        <div style={{flex:1,display:'flex',flexDirection:'row',padding:pad,gap:'0.5rem',overflow:'hidden',alignItems:'center'}}>
-          <div style={{flex:1,overflow:'hidden'}}>{textBlock}</div>
-          <div style={{flexShrink:0}}><QRCodeSVG value={qrUrl} size={qrPx}/></div>
-        </div>
-      ):(
-        <div style={{flex:1,display:'flex',flexDirection:'column',padding:pad,gap:'3px',overflow:'hidden'}}>
-          <div style={{flexShrink:0}}>{textBlock}</div>
-          <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center'}}>
-            <QRCodeSVG value={qrUrl} size={qrPx}/>
+    // Outer wrapper is NOT clipped so the cut contour (which sits outside the
+    // label edge) stays visible; the inner box keeps overflow:hidden for the
+    // rounded-corner clip of the color stripe.
+    <div style={{position:'relative',width:`${w}in`,height:`${h}in`,pageBreakInside:'avoid',boxSizing:'border-box'}}>
+      <div style={{width:'100%',height:'100%',border:'1.5px solid #cbd5e1',borderRadius:'8px',overflow:'hidden',backgroundColor:'white',display:'flex',flexDirection:'column',boxSizing:'border-box'}}>
+        <div style={{height:stripeH,backgroundColor:bin.color,flexShrink:0,WebkitPrintColorAdjust:'exact',printColorAdjust:'exact'} as React.CSSProperties}/>
+        {isLayout3?(
+          <div style={{flex:1,display:'flex',flexDirection:'row',padding:pad,gap:'0.5rem',overflow:'hidden',alignItems:'center'}}>
+            <div style={{flex:1,overflow:'hidden'}}>{textBlock}</div>
+            <div style={{flexShrink:0}}><QRCodeSVG value={qrUrl} size={qrPx}/></div>
           </div>
-        </div>
-      )}
+        ):(
+          <div style={{flex:1,display:'flex',flexDirection:'column',padding:pad,gap:'3px',overflow:'hidden'}}>
+            <div style={{flexShrink:0}}>{textBlock}</div>
+            <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center'}}>
+              <QRCodeSVG value={qrUrl} size={qrPx}/>
+            </div>
+          </div>
+        )}
+      </div>
+      <CutContourOverlay w={w} h={h} cut={cut} />
     </div>
   )
 }
@@ -221,12 +226,14 @@ function buildLabelHtml(bin: BinData, w: number, h: number, cut: CutContourSetti
     : `<div style="flex-shrink:0">${textHtml}</div><div style="flex:1;display:flex;align-items:center;justify-content:center">${qrSvg}</div>`
 
   return `
-    <div style="width:${w}in;height:${h}in;border:1.5px solid #cbd5e1;border-radius:8px;overflow:hidden;background:white;display:flex;flex-direction:column;page-break-inside:avoid;box-sizing:border-box;position:relative;">
-      ${cutContourSvgStr(w,h,cut)}
-      <div style="height:${stripeH};background:${stripe};flex-shrink:0;-webkit-print-color-adjust:exact;print-color-adjust:exact;color-adjust:exact"></div>
-      <div style="flex:1;display:flex;flex-direction:${isLayout3?'row':'column'};padding:${pad};gap:${isLayout3?'0.5rem':'3px'};overflow:hidden;${isLayout3?'align-items:center':''}">
-        ${inner}
+    <div style="position:relative;width:${w}in;height:${h}in;page-break-inside:avoid;box-sizing:border-box;">
+      <div style="width:100%;height:100%;border:1.5px solid #cbd5e1;border-radius:8px;overflow:hidden;background:white;display:flex;flex-direction:column;box-sizing:border-box;">
+        <div style="height:${stripeH};background:${stripe};flex-shrink:0;-webkit-print-color-adjust:exact;print-color-adjust:exact;color-adjust:exact"></div>
+        <div style="flex:1;display:flex;flex-direction:${isLayout3?'row':'column'};padding:${pad};gap:${isLayout3?'0.5rem':'3px'};overflow:hidden;${isLayout3?'align-items:center':''}">
+          ${inner}
+        </div>
       </div>
+      ${cutContourSvgStr(w,h,cut)}
     </div>`
 }
 
