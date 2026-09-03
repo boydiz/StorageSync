@@ -33,13 +33,13 @@ No test suite, no lint config, no CI beyond Vercel.
 `supabase/config.toml` is committed (`project_id = "storagesync"`). The CLI (`supabase`, installed globally) is the preferred way to apply migrations:
 
 ```
-supabase login                                # one-time, browser access token
-supabase link --project-ref <ref>              # one-time, ref from dashboard URL
-supabase migration repair --status applied 001 002 003   # one-time, mark hand-run migrations as done
-supabase db push                               # apply any local migration not yet on the remote
+npx supabase login                              # one-time, browser access token
+npx supabase link --project-ref <ref>            # one-time, ref from dashboard URL; prompts for DB password
+npx supabase migration repair --status applied 001 002   # one-time: 001+002 were hand-run, mark them done
+npx supabase db push                             # apply local migrations not yet on the remote (003 onward)
 ```
 
-Version is parsed from the leading digits of the filename, so the `NNN_` names work as-is. New migration: `supabase migration new <name>` or just add the next `NNN_*.sql`. Migrations `001`–`003` were applied by hand via the SQL editor before the CLI workflow existed.
+`supabase` is not on PATH — use `npx supabase`. `db push` talks to the remote directly (no Docker needed). Version is parsed from the leading digits of the filename, so the `NNN_` names work as-is. New migration: `npx supabase migration new <name>` or just add the next `NNN_*.sql`. Migrations `001`+`002` were applied by hand via the SQL editor before the CLI workflow existed; `003` onward go through `db push`.
 
 ## Architecture
 
