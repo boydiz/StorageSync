@@ -81,12 +81,11 @@ export default function SettingsPage() {
     if (!shareEmail.trim()) return
     setSharing(true)
     try {
-      const { data: userId } = await supabase.rpc('get_user_id_by_email', { _email: shareEmail.trim() })
-      if (!userId) { toast('User not found with that email', 'error'); return }
-      if (userId === user!.id) { toast("You can't share with yourself", 'error'); return }
-
-      const { error: accessError } = await supabase.from('shared_access').insert({ owner_id: user!.id, shared_with_user_id: userId, email: shareEmail.trim() })
-      if (accessError) { toast('Already shared with this user', 'error'); return }
+      const { data: status, error } = await supabase.rpc('share_access_by_email', { _email: shareEmail.trim() })
+      if (error) { toast('Failed to share', 'error'); return }
+      if (status === 'not_found') { toast('User not found with that email', 'error'); return }
+      if (status === 'self') { toast("You can't share with yourself", 'error'); return }
+      if (status === 'already_shared') { toast('Already shared with this user', 'error'); return }
 
       // The viewer role is assigned server-side by the shared_access trigger.
       toast(`Shared with ${shareEmail}!`)
