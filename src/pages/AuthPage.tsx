@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Navigate } from 'react-router-dom'
+import { Navigate, useLocation, Location } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
@@ -10,6 +10,7 @@ type Mode = 'login' | 'signup' | 'forgot'
 
 export default function AuthPage() {
   const { user, loading } = useAuth()
+  const location = useLocation()
   const [mode, setMode] = useState<Mode>('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -22,7 +23,10 @@ export default function AuthPage() {
       <Loader2 className="animate-spin h-6 w-6 text-primary" />
     </div>
   )
-  if (user) return <Navigate to="/" replace />
+  if (user) {
+    const from = (location.state as { from?: Location } | null)?.from
+    return <Navigate to={from ? `${from.pathname}${from.search}` : '/'} replace />
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
