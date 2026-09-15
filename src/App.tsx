@@ -11,6 +11,7 @@ import BinDetail from '@/pages/BinDetail'
 import BinForm from '@/pages/BinForm'
 import ItemForm from '@/pages/ItemForm'
 import ItemsPage from '@/pages/ItemsPage'
+import ScanPage from '@/pages/ScanPage'
 import LabelsPage from '@/pages/LabelsPage'
 import SettingsPage from '@/pages/SettingsPage'
 import { Loader2 } from 'lucide-react'
@@ -40,6 +41,7 @@ function AppRoutes() {
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/items" element={<ProtectedRoute><ItemsPage /></ProtectedRoute>} />
+      <Route path="/scan" element={<ProtectedRoute><ScanPage /></ProtectedRoute>} />
       <Route path="/labels" element={<ProtectedRoute><LabelsPage /></ProtectedRoute>} />
       <Route path="/settings" element={<ProtectedRoute><SettingsPage /></ProtectedRoute>} />
       <Route path="/bin/new" element={<ProtectedRoute><BinForm /></ProtectedRoute>} />

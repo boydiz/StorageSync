@@ -1,5 +1,5 @@
 import { NavLink, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, Package, Tag, Settings, LogOut, Plus, Box, Archive } from 'lucide-react'
+import { LayoutDashboard, Package, Tag, Settings, LogOut, Plus, Box, Archive, ScanLine } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/contexts/AuthContext'
 import { useUserRole } from '@/hooks/useUserRole'
@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/scan', icon: ScanLine, label: 'Scan' },
   { to: '/items', icon: Package, label: 'Items' },
   { to: '/labels', icon: Tag, label: 'Labels' },
   { to: '/settings', icon: Settings, label: 'Settings' },
