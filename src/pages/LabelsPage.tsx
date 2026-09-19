@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 import { useSearchParams } from 'react-router-dom'
 import { Printer, Tag, X, ChevronDown, ChevronUp, Scissors, Droplet, Share2, Download, Loader2 } from 'lucide-react'
 import { useBins } from '@/hooks/useBins'
@@ -206,6 +207,27 @@ function BlackInkPanel({black,setBlack}:{black:BlackInkSettings;setBlack:(b:Blac
   )
 }
 
+// ─── Print Area ───────────────────────────────────────────────────────────────
+// A print-only copy of the pages, rendered outside #root. Each page gets its own named @page so
+// sheets print at exactly their size. Hidden on screen; index.css shows it (and hides the app) when printing.
+
+function PrintArea({pages,measurer,cut}:{
+  pages:PageSpec[];measurer:LabelFonts['measurer'];cut:CutContourSettings
+}) {
+  return createPortal(
+    <div className="label-print-portal">
+      <style>{pages.map((p,i)=>`@page pp${i}{size:${p.w}in ${p.h}in;margin:0}`).join('\n')}</style>
+      {pages.map((p,i)=>(
+        <div key={i} className="label-print-page"
+          style={{width:`${p.w}in`,height:`${p.h}in`,breakAfter:i<pages.length-1?'page':'auto',page:`pp${i}`} as React.CSSProperties}>
+          <PageSvg page={p} measurer={measurer} cut={cut} bare/>
+        </div>
+      ))}
+    </div>,
+    document.body,
+  )
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function LabelsPage() {
@@ -354,6 +376,14 @@ export default function LabelsPage() {
       if (err instanceof DOMException && err.name==='AbortError') return
       download()
     }
+  }
+
+  // Opens the browser's print dialog straight away (AirPrint on iPhone). Marks the labels printed afterwards.
+  const printNow = () => {
+    const ids = selectedBins.map(b=>b.id)
+    const after = () => { window.removeEventListener('afterprint',after); void markPrinted(ids) }
+    window.addEventListener('afterprint',after)
+    window.print()
   }
 
   const MODE_LABELS:Record<PrintMode,string>={
@@ -598,12 +628,15 @@ export default function LabelsPage() {
             <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
               {pdf.building&&<span style={{color:'#94a3b8',fontSize:12,display:'flex',alignItems:'center',gap:6}}><Loader2 size={13} className="animate-spin"/> Preparing PDF…</span>}
               {pdf.error&&<span style={{color:'#f87171',fontSize:12}}>{pdf.error}</span>}
+              <button onClick={printNow} disabled={!fonts||pages.length===0} style={{display:'flex',alignItems:'center',gap:'6px',backgroundColor:'#3b82f6',color:'white',border:'none',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontWeight:700,fontSize:13}}>
+                <Printer size={14}/> Print
+              </button>
               {canShareFiles&&(
-                <button onClick={share} disabled={!pdf.blob||pdf.building} style={{display:'flex',alignItems:'center',gap:'6px',backgroundColor:'#3b82f6',color:'white',border:'none',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontWeight:700,fontSize:13,opacity:!pdf.blob||pdf.building?0.5:1}}>
+                <button onClick={share} disabled={!pdf.blob||pdf.building} style={{display:'flex',alignItems:'center',gap:'6px',backgroundColor:'#1e293b',color:'white',border:'none',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontWeight:700,fontSize:13,opacity:!pdf.blob||pdf.building?0.5:1}}>
                   <Share2 size={14}/> Share / Email PDF
                 </button>
               )}
-              <button onClick={download} disabled={!pdf.blob||pdf.building} style={{display:'flex',alignItems:'center',gap:'6px',backgroundColor:canShareFiles?'#1e293b':'#3b82f6',color:'white',border:'none',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontWeight:700,fontSize:13,opacity:!pdf.blob||pdf.building?0.5:1}}>
+              <button onClick={download} disabled={!pdf.blob||pdf.building} style={{display:'flex',alignItems:'center',gap:'6px',backgroundColor:'#1e293b',color:'white',border:'none',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontWeight:700,fontSize:13,opacity:!pdf.blob||pdf.building?0.5:1}}>
                 <Download size={14}/> {canShareFiles?'Save':'Download PDF'}
               </button>
               <button onClick={()=>setShowPreview(false)} style={{width:32,height:32,borderRadius:7,border:'1px solid #1e293b',backgroundColor:'transparent',color:'#64748b',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}}>
@@ -630,6 +663,7 @@ export default function LabelsPage() {
           </div>
         </div>
       )}
+      {showPreview&&fonts&&pages.length>0&&<PrintArea pages={pages} measurer={fonts.measurer} cut={cut}/>}
     </div>
   )
 }

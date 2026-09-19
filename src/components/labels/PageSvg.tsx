@@ -55,10 +55,11 @@ function PrimSvg({ p, cutColor }: { p: Prim; cutColor: string }) {
   }
 }
 
-export function PageSvg({ page, measurer, cut }: {
+export function PageSvg({ page, measurer, cut, bare = false }: {
   page: PageSpec
   measurer: Measurer
   cut: { enabled: boolean; offset: number; color: string }
+  bare?: boolean // no background/shadow, fills its container (used for printing)
 }) {
   const cutColor = safeColor(cut.color)
   const labels = useMemo(
@@ -68,7 +69,9 @@ export function PageSvg({ page, measurer, cut }: {
   return (
     <svg
       viewBox={`0 0 ${page.w} ${page.h}`}
-      style={{ width: '100%', height: 'auto', display: 'block', background: 'white', boxShadow: '0 8px 40px rgba(0,0,0,0.5)' }}
+      style={bare
+        ? { width: '100%', height: '100%', display: 'block' }
+        : { width: '100%', height: 'auto', display: 'block', background: 'white', boxShadow: '0 8px 40px rgba(0,0,0,0.5)' }}
     >
       {labels.map(({ l, draw }) => (
         <g key={l.bin.id} transform={`translate(${n(l.x)} ${n(l.y)})`}>

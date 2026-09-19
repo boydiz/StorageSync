@@ -78,6 +78,18 @@
   body { background: white !important; }
 }
 
+/* Label printing: the pages live in a portal outside #root, shown only when printing. */
+.label-print-portal { display: none; }
+@media print {
+  #root { display: none !important; }
+  .label-print-portal { display: block !important; }
+  .label-print-page {
+    overflow: hidden;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}
+
 @page {
   size: letter;
   margin: 0.5in;
