@@ -281,12 +281,15 @@ export default function LabelsPage() {
   const selectUnprinted = () => setSelected(new Set(bins.filter(b=>!b.printedAt).map(b=>b.id)))
   const deselectAll = () => setSelected(new Set())
 
-  const printedError = () => toast("Couldn't save printed status — the database update (migration 005) may not be applied yet", 'error')
+  const printedError = (err?: unknown) => {
+    const detail = err && typeof err === 'object' && 'message' in err ? String((err as {message:unknown}).message) : ''
+    toast(`Couldn't save printed status${detail?`: ${detail}`:''}`, 'error')
+  }
   const markPrinted = async (ids: string[]) => {
     try {
       await setPrinted.mutateAsync({ids, printed:true})
       toast(`${ids.length} label${ids.length!==1?'s':''} marked as printed`)
-    } catch { printedError() }
+    } catch (err) { printedError(err) }
   }
   const togglePrinted = (id: string, printed: boolean) =>
     setPrinted.mutate({ids:[id], printed}, { onError: printedError })
@@ -628,17 +631,21 @@ export default function LabelsPage() {
             <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
               {pdf.building&&<span style={{color:'#94a3b8',fontSize:12,display:'flex',alignItems:'center',gap:6}}><Loader2 size={13} className="animate-spin"/> Preparing PDF…</span>}
               {pdf.error&&<span style={{color:'#f87171',fontSize:12}}>{pdf.error}</span>}
-              <button onClick={printNow} disabled={!fonts||pages.length===0} style={{display:'flex',alignItems:'center',gap:'6px',backgroundColor:'#3b82f6',color:'white',border:'none',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontWeight:700,fontSize:13}}>
-                <Printer size={14}/> Print
-              </button>
-              {canShareFiles&&(
-                <button onClick={share} disabled={!pdf.blob||pdf.building} style={{display:'flex',alignItems:'center',gap:'6px',backgroundColor:'#1e293b',color:'white',border:'none',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontWeight:700,fontSize:13,opacity:!pdf.blob||pdf.building?0.5:1}}>
-                  <Share2 size={14}/> Share / Email PDF
+              {canShareFiles?(
+                // Phones: the share sheet is the reliable way to Print (AirPrint), Email, or Save to Files.
+                <button onClick={share} disabled={!pdf.blob||pdf.building} style={{display:'flex',alignItems:'center',gap:'6px',backgroundColor:'#3b82f6',color:'white',border:'none',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontWeight:700,fontSize:13,opacity:!pdf.blob||pdf.building?0.5:1}}>
+                  <Share2 size={14}/> Print / Email / Save PDF
                 </button>
+              ):(
+                <>
+                  <button onClick={printNow} disabled={!fonts||pages.length===0} style={{display:'flex',alignItems:'center',gap:'6px',backgroundColor:'#3b82f6',color:'white',border:'none',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontWeight:700,fontSize:13}}>
+                    <Printer size={14}/> Print
+                  </button>
+                  <button onClick={download} disabled={!pdf.blob||pdf.building} style={{display:'flex',alignItems:'center',gap:'6px',backgroundColor:'#1e293b',color:'white',border:'none',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontWeight:700,fontSize:13,opacity:!pdf.blob||pdf.building?0.5:1}}>
+                    <Download size={14}/> Download PDF
+                  </button>
+                </>
               )}
-              <button onClick={download} disabled={!pdf.blob||pdf.building} style={{display:'flex',alignItems:'center',gap:'6px',backgroundColor:'#1e293b',color:'white',border:'none',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontWeight:700,fontSize:13,opacity:!pdf.blob||pdf.building?0.5:1}}>
-                <Download size={14}/> {canShareFiles?'Save':'Download PDF'}
-              </button>
               <button onClick={()=>setShowPreview(false)} style={{width:32,height:32,borderRadius:7,border:'1px solid #1e293b',backgroundColor:'transparent',color:'#64748b',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}}>
                 <X size={15}/>
               </button>
