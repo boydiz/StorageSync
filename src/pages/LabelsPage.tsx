@@ -347,10 +347,14 @@ export default function LabelsPage() {
 
   const fileName = `StorageSync-labels-${new Date().toISOString().slice(0,10)}.pdf`
 
+  // Phones and tablets get the share sheet; every desktop (even a touchscreen Windows PC) gets Print + Download.
   const canShareFiles = useMemo(()=>{
     try {
-      return typeof navigator.canShare==='function'
-        && window.matchMedia('(pointer: coarse)').matches
+      const ua = navigator.userAgent
+      const isPhoneOrTablet = /iPhone|iPad|iPod|Android/i.test(ua)
+        || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1) // iPadOS reports itself as a Mac
+      return isPhoneOrTablet
+        && typeof navigator.canShare==='function'
         && navigator.canShare({files:[new File([''],'x.pdf',{type:'application/pdf'})]})
     } catch { return false }
   },[])
