@@ -7,6 +7,7 @@ export interface Bin {
   color: string
   createdAt: string
   userId: string
+  printedAt: string | null
 }
 
 export interface Item {

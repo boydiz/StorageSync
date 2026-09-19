@@ -209,7 +209,7 @@ function BlackInkPanel({black,setBlack}:{black:BlackInkSettings;setBlack:(b:Blac
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function LabelsPage() {
-  const {bins} = useBins()
+  const {bins, setPrinted} = useBins()
   const {items} = useItems()
   const {toast} = useToast()
   const [searchParams] = useSearchParams()
@@ -247,9 +247,27 @@ export default function LabelsPage() {
 
   const updateWide = (updates: Partial<WideFormatSettings>) => setWide(prev => ({...prev,...updates}))
 
+  const [printFilter,setPrintFilter] = useState<'all'|'todo'|'done'>('all')
+  const printedCount = bins.filter(b=>b.printedAt).length
+  const visibleBins = useMemo(
+    ()=>bins.filter(b=>printFilter==='all' ? true : printFilter==='done' ? !!b.printedAt : !b.printedAt),
+    [bins, printFilter],
+  )
+
   const toggleBin   = (id:string) => setSelected(prev=>{const n=new Set(prev);n.has(id)?n.delete(id):n.add(id);return n})
-  const selectAll   = () => setSelected(new Set(bins.map(b=>b.id)))
+  const selectAll   = () => setSelected(new Set(visibleBins.map(b=>b.id)))
+  const selectUnprinted = () => setSelected(new Set(bins.filter(b=>!b.printedAt).map(b=>b.id)))
   const deselectAll = () => setSelected(new Set())
+
+  const printedError = () => toast("Couldn't save printed status — the database update (migration 005) may not be applied yet", 'error')
+  const markPrinted = async (ids: string[]) => {
+    try {
+      await setPrinted.mutateAsync({ids, printed:true})
+      toast(`${ids.length} label${ids.length!==1?'s':''} marked as printed`)
+    } catch { printedError() }
+  }
+  const togglePrinted = (id: string, printed: boolean) =>
+    setPrinted.mutate({ids:[id], printed}, { onError: printedError })
   const selectedBins: LabelBin[] = useMemo(() => bins.filter(b=>selected.has(b.id)).map(b => ({
     id: b.id, binNumber: b.binNumber, name: b.name,
     description: b.description, color: b.color,
@@ -323,6 +341,7 @@ export default function LabelsPage() {
     a.remove()
     setTimeout(()=>URL.revokeObjectURL(url),60000)
     toast(`Saved ${fileName} — check your Downloads folder`)
+    void markPrinted(selectedBins.map(b=>b.id))
   }
 
   const share = async () => {
@@ -330,7 +349,7 @@ export default function LabelsPage() {
     const file = new File([pdf.blob], fileName, {type:'application/pdf'})
     try {
       await navigator.share({files:[file], title:'StorageSync labels'})
-      toast('PDF shared')
+      void markPrinted(selectedBins.map(b=>b.id))
     } catch (err) {
       if (err instanceof DOMException && err.name==='AbortError') return
       download()
@@ -504,10 +523,26 @@ export default function LabelsPage() {
       </div>
 
       {/* Bin select controls */}
-      <div className="flex gap-2 mb-4">
+      <div className="flex flex-wrap gap-2 mb-3">
         <Button variant="outline" size="sm" onClick={selectAll}>Select all</Button>
+        <Button variant="outline" size="sm" onClick={selectUnprinted}>Select not printed</Button>
         <Button variant="outline" size="sm" onClick={deselectAll}>Deselect all</Button>
       </div>
+
+      {/* Printed filter */}
+      <div className="flex flex-wrap gap-2 mb-1.5">
+        {([
+          ['all',  `All (${bins.length})`],
+          ['todo', `Not printed (${bins.length-printedCount})`],
+          ['done', `Printed (${printedCount})`],
+        ] as const).map(([key,label])=>(
+          <button key={key} onClick={()=>setPrintFilter(key)}
+            className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${printFilter===key?'bg-primary text-primary-foreground border-primary':'border-border bg-card text-muted-foreground hover:bg-accent'}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+      <p className="text-xs text-muted-foreground mb-4">Labels are marked printed automatically when you save or share the PDF. Use the Printed checkbox on the right of each bin to mark or unmark it yourself.</p>
 
       {/* Bin list */}
       {bins.length===0?(
@@ -517,13 +552,26 @@ export default function LabelsPage() {
         </div>
       ):(
         <div className="space-y-2">
-          {bins.map(bin=>(
+          {visibleBins.length===0&&(
+            <p className="text-center text-sm text-muted-foreground py-8 border border-dashed rounded-xl">No bins match this filter</p>
+          )}
+          {visibleBins.map(bin=>(
             <label key={bin.id} className={`flex items-center gap-3 rounded-xl border px-4 py-3 cursor-pointer transition-colors ${selected.has(bin.id)?'border-primary/50 bg-primary/5':'bg-card hover:bg-accent'}`}>
               <Checkbox checked={selected.has(bin.id)} onCheckedChange={()=>toggleBin(bin.id)}/>
               <div className="h-3 w-3 rounded-full shrink-0" style={{backgroundColor:bin.color}}/>
               <span className="font-mono text-sm font-bold">#{formatBinNumber(bin.binNumber)}</span>
               <span className="text-sm font-medium flex-1">{bin.name}</span>
               {bin.location&&<span className="text-xs text-muted-foreground hidden sm:block">{bin.location}</span>}
+              {/* Printed checkbox — separate from the selection checkbox on the left */}
+              <span onClick={e=>{e.preventDefault();e.stopPropagation()}}
+                className={`shrink-0 flex items-center gap-1.5 border-l border-border pl-3 text-[11px] font-medium ${bin.printedAt?'text-green-500':'text-muted-foreground'}`}>
+                <Checkbox checked={!!bin.printedAt} aria-label={`Bin ${formatBinNumber(bin.binNumber)} printed`}
+                  onCheckedChange={v=>togglePrinted(bin.id, v===true)}/>
+                <span className="leading-tight">
+                  Printed
+                  {bin.printedAt&&<span className="block text-[10px] opacity-80">{new Date(bin.printedAt).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</span>}
+                </span>
+              </span>
             </label>
           ))}
         </div>

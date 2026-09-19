@@ -13,6 +13,7 @@ function mapBin(row: Record<string, unknown>): Bin {
     color: row.color as string,
     createdAt: row.created_at as string,
     userId: row.user_id as string,
+    printedAt: (row.printed_at as string | null | undefined) ?? null,
   }
 }
 
@@ -74,7 +75,20 @@ export function useBins() {
     },
   })
 
+  // printed = true stamps the current time; false clears it.
+  const setPrinted = useMutation({
+    mutationFn: async ({ ids, printed }: { ids: string[]; printed: boolean }) => {
+      if (ids.length === 0) return
+      const { error } = await supabase
+        .from('bins')
+        .update({ printed_at: printed ? new Date().toISOString() : null })
+        .in('id', ids)
+      if (error) throw error
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['bins'] }),
+  })
+
   const getBin = (id: string) => bins.find(b => b.id === id)
 
-  return { bins, isLoading, createBin, updateBin, deleteBin, getBin }
+  return { bins, isLoading, createBin, updateBin, deleteBin, setPrinted, getBin }
 }
