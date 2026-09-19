@@ -16,11 +16,13 @@ function mapBin(row: Record<string, unknown>): Bin {
   }
 }
 
+const NO_BINS: Bin[] = []
+
 export function useBins() {
   const { user } = useAuth()
   const qc = useQueryClient()
 
-  const { data: bins = [], isLoading } = useQuery({
+  const { data: bins = NO_BINS, isLoading } = useQuery({
     queryKey: ['bins', user?.id],
     queryFn: async () => {
       const { data, error } = await supabase

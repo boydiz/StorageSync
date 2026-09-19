@@ -14,7 +14,7 @@ Home storage-bin management app. Track physical bins and the items inside them, 
 - TanStack Query for all server state
 - Supabase for auth + Postgres (RLS enabled on every table)
 - react-router-dom v6
-- `qrcode.react` for QR codes
+- `qrcode.react` for on-screen QR codes; `pdf-lib` + `@pdf-lib/fontkit` + `qrcode-generator` for label PDFs
 - Path alias: `@/*` → `src/*`
 - SPA routing on Vercel via `vercel.json` rewrite to `/index.html`
 
@@ -87,20 +87,27 @@ Trigger `on_auth_user_created` auto-inserts an `app_settings` row on signup.
 - **LabelsPage** — the complex one. See below.
 - **SettingsPage** — branding (app name/description + logo as data URL, 200 KB cap), dark toggle, share-by-email. `handleShare` stores the typed email on the `shared_access` row; `loadSharedUsers` reads it back directly.
 
-### LabelsPage (`src/pages/LabelsPage.tsx`)
+### LabelsPage (`src/pages/LabelsPage.tsx`) + `src/lib/labels/`
 
-Select bins, configure, preview full-screen (scaled), then print by opening a Blob URL window that carries its own `@page` CSS. Initial selection is seeded from the `?bin=<id>` query param (used by BinDetail's "Print Label"). All bin/cut text is run through `escapeHtml` / `safeColor` before it goes into the concatenated print HTML — the Blob window is same-origin, so unescaped fields would be an XSS sink (migration-era fix).
+Select bins, configure, preview full-screen, then **Share / Save** (phones, via the Web Share sheet) or **Download** (desktop) a PDF generated in the browser with `pdf-lib`. Browser print-to-PDF is deliberately not used: it can't write spot colors or true strokes. Initial selection is seeded from the `?bin=<id>` query param (used by BinDetail's "Print Label"). Labels are drawn as PDF text/paths (no HTML string building), so there is no HTML-injection surface; only `safeColor` is applied to user-supplied colors.
 
-**4 print modes**, each with **cut contour** support:
+Pipeline (pure except `pdf.ts` / `fonts.ts`):
 
-1. `home` — US Letter, 1–6 labels/page (preset grids; layout 3 is a side-by-side row variant).
-2. `thermal` — one label per sheet; presets (4×6, 6×4, 3×2, 2×3, 4×4) or custom W/H + margins.
-3. `wideformat` — roll printing; user sets roll width / labels-across / gap, label width auto-computed via `calcLabelW`; strip length capped at `maxLength`.
+- `layout.ts` — `layoutLabel(bin, w, h, layout, measurer)` returns draw primitives (stripe, text, qr, outline, cut) in inches. It is the single source of truth for both renderers. The bin name is always one line and shrinks to fit; its block is only as tall as the text, so a shrunk name gives its space back. Text and QR get fixed zones so they can't overlap: the QR gets its minimum size first, then as many description/item lines as fit; if that would leave fewer than two lines, the bin number shrinks a step at a time. `layout` is `'stack'` or `'split'` — `pickLayout(w,h)` derives it from aspect ratio.
+- `jobs.ts` — `build{Home,Thermal,Wide,Custom}Pages` return `PageSpec[]` (page size + placed labels). Wide-format sheet math (`calcLabelW`, `wideRowsPerSheet`, `WIDE_SHAPES`) lives here.
+- `pdf.ts` — `buildPdf(pages, fonts, opts)`, lazy-loaded. Writes real `/Separation` spot colors (cut contour + optional spot black), a stroke-only cut line (0.02"), vector QR, and text either as live Arial (a non-embedded TrueType reference to `ArialMT`/`Arial-BoldMT` with Arimo widths — Windows/macOS/iOS all ship Arial, so nothing to install) or, with the "Outline text" option, as filled glyph outlines. Saved without object streams for RIP compatibility.
+- `fonts.ts` — loads Arimo (Arial-metric, 400/700) `.woff` from `@fontsource`, builds the text `Measurer` (fontkit) and registers `FontFace`s (`SSLabel*`) for the preview. Ligatures are off in both preview and PDF so measured widths match what is drawn. Only two fonts: the bin number is Arial Bold too.
+- `components/labels/PageSvg.tsx` — preview renderer (SVG in inch units) built from the same layout.
+- `qr.ts` — QR module matrix via `qrcode-generator` (BinDetail still uses `qrcode.react` for its on-screen QR).
+
+**4 print modes**:
+
+1. `home` — US Letter, 1–6 labels/page.
+2. `thermal` — one label per page; presets (4×6, 6×4, 3×2, 2×3, 4×4) or custom W/H + margins.
+3. `wideformat` — roll/sheet model with multi-sheet overflow and auto-fit length; label **width** from roll math, **height** locked to `WIDE_SHAPES[shape].ratio` (`qr` / `square` / `wide`). `WideFormatDiagram` shows a to-scale sketch + estimated QR scan distance.
 4. `custom` — arbitrary page W/H, cols, rows, margins, gap.
 
-**Cut contour** (`CutContourSettings`): optional dashed rounded-rect SVG overlay drawn on top of each label, with configurable offset (−0.1"–0.1", inside/outside the label edge), color, and a spot-color / swatch name (e.g. `CutContour`, `Die Cut`) that must match the RIP software's cut layer. Rendered both as a React component (`CutContourOverlay`) for preview and as a raw SVG string (`cutContourSvgStr`) for the print HTML.
-
-Label content sizing (stripe height, font sizes, QR fraction, padding) scales off label area — see `LabelCard` / `buildLabelHtml`, which are kept visually in sync.
+**Color / spot settings**: *Cut Contour* (all modes) is a solid 0.02" stroke in a spot swatch named by `CutContourSettings.swatchName` (default `CutContour`), offset −0.1"–0.1"; its color is only the on-screen/alternate color. *Print black* (wide format only) uses spot swatch `RVW-BK22A` (editable) at 100% for all text and QR codes; other modes use plain black. The thin gray label outline always prints.
 
 ## UI primitives (`src/components/ui/`)
 

@@ -15,11 +15,13 @@ function mapItem(row: Record<string, unknown>): Item {
   }
 }
 
+const NO_ITEMS: Item[] = []
+
 export function useItems() {
   const { user } = useAuth()
   const qc = useQueryClient()
 
-  const { data: items = [], isLoading } = useQuery({
+  const { data: items = NO_ITEMS, isLoading } = useQuery({
     queryKey: ['items', user?.id],
     queryFn: async () => {
       const { data, error } = await supabase

@@ -1,7 +1,6 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Printer, Tag, X, ChevronDown, ChevronUp, Scissors } from 'lucide-react'
-import { QRCodeSVG } from 'qrcode.react'
+import { Printer, Tag, X, ChevronDown, ChevronUp, Scissors, Droplet, Share2, Download, Loader2 } from 'lucide-react'
 import { useBins } from '@/hooks/useBins'
 import { useItems } from '@/hooks/useItems'
 import { Button } from '@/components/ui/button'
@@ -9,7 +8,15 @@ import { Checkbox } from '@/components/ui/controls'
 import { Input, Label } from '@/components/ui/primitives'
 import { Switch } from '@/components/ui/controls'
 import { formatBinNumber } from '@/lib/utils'
-import ReactDOMServer from 'react-dom/server'
+import { useToast } from '@/components/ui/toast'
+import { PageSvg } from '@/components/labels/PageSvg'
+import { loadLabelFonts, type LabelFonts } from '@/lib/labels/fonts'
+import { layoutLabel, pickLayout, scanDistanceLabel, type LabelBin } from '@/lib/labels/layout'
+import {
+  HOME_GRID, WIDE_SHAPES, buildHomePages, buildThermalPages, buildWidePages, buildCustomPages,
+  homeLabelSize, wideLabelSize, wideRowsPerSheet, customLabelSize,
+  type PageSpec, type WideFormatSettings, type WideShape, type CustomSettings,
+} from '@/lib/labels/jobs'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -18,407 +25,25 @@ type PrintMode = 'home' | 'thermal' | 'wideformat' | 'custom'
 interface CutContourSettings {
   enabled: boolean
   offset: number      // inches, -0.1 to 0.1
-  color: string       // hex
-  swatchName: string  // e.g. "CutContour"
+  color: string       // hex (preview + fallback color only)
+  swatchName: string  // spot swatch name, e.g. "CutContour"
 }
 
-interface HomeSettings    { labelsPerPage: 1|2|3|4|5|6 }
+interface BlackInkSettings {
+  enabled: boolean
+  swatchName: string  // spot swatch name for all black text/QR, e.g. "RVW-BK22A"
+}
+
 interface ThermalSettings { labelW: number; labelH: number; marginH: number; marginV: number }
 
-// Wide format: the label shape is locked to one of a few aspect ratios so it
-// can't be dragged into a weird sliver. Width comes from the roll math; height
-// is width x the shape's ratio.
-type WideShape = 'qr' | 'wide' | 'square'
-const WIDE_SHAPES: Record<WideShape, { label: string; ratio: number; hint: string }> = {
-  qr:     { label: 'QR-dominant', ratio: 1.30, hint: 'Tall — big number on top, large QR below' },
-  square: { label: 'Square',      ratio: 1.00, hint: 'Balanced — number + text over a large QR' },
-  wide:   { label: 'Wide',        ratio: 0.62, hint: 'Landscape — number + text left, QR right' },
-}
-
-interface WideFormatSettings {
-  sheetW: number        // sheet boundary width (material width)
-  sheetLen: number      // max sheet length; a new sheet starts past this
-  colsAcross: number
-  gap: number
-  margin: number        // inside the sheet edge (room for reg marks later)
-  shape: WideShape
-  autoFit: boolean      // trim each sheet's length to its content, no blank tail
-}
-interface CustomSettings {
-  pageW: number; pageH: number; cols: number; rows: number
-  marginH: number; marginV: number; gap: number
-}
-
-interface BinData {
-  id: string; binNumber: number; name: string
-  description: string; color: string
-  items: string[]   // item names in this bin, printed on the label
-}
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const HOME_GRID: Record<1|2|3|4|5|6,{cols:number;rows:number}> = {
-  1:{cols:1,rows:1}, 2:{cols:1,rows:2}, 3:{cols:1,rows:3},
-  4:{cols:2,rows:2}, 5:{cols:1,rows:5}, 6:{cols:2,rows:3},
-}
 const THERMAL_PRESETS = [
   {label:'4" × 6"',w:4,h:6},{label:'6" × 4"',w:6,h:4},
   {label:'3" × 2"',w:3,h:2},{label:'2" × 3"',w:2,h:3},{label:'4" × 4"',w:4,h:4},
 ]
 
-// Label width from sheet width, margins, columns, and gap
-function calcLabelW(sheetW: number, cols: number, gap: number, margin: number): number {
-  const usable = sheetW - margin * 2
-  return Math.max(0.5, (usable - gap * (cols - 1)) / cols)
-}
-
-// ─── HTML/CSS sanitizers for print-window string building ──────────────────────
-// Label HTML is assembled by string concatenation and opened as a same-origin
-// blob: URL, so any unescaped bin/cut field would execute script in the app's
-// origin. Escape everything user-controlled before it goes into markup.
-
-function escapeHtml(value: string): string {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
-
-// Colors land in CSS/SVG contexts where HTML-escaping is not enough; only allow
-// a hex literal, otherwise fall back to black.
-function safeColor(value: string): string {
-  return /^#[0-9a-fA-F]{3,8}$/.test(String(value ?? '').trim()) ? value.trim() : '#000000'
-}
-
-// ─── Label geometry ───────────────────────────────────────────────────────────
-// One source of truth for label sizing, shared by the on-screen preview
-// (LabelCard) and the print HTML (buildLabelHtml). The bin number and the QR
-// code are the primary elements — big number to read across a room, big QR to
-// scan from a distance. Name/location/description are supporting text.
-
-type LabelLayout = 'stack' | 'split'
-
-const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v))
-
-// Landscape-ish labels put text and QR side by side; otherwise stack them.
-function pickLayout(w: number, h: number): LabelLayout {
-  return w / h >= 1.35 ? 'split' : 'stack'
-}
-
-// Rough QR scan distance: a QR reads from about 10x its width.
-function scanDistanceLabel(qrInches: number): string {
-  const ft = (qrInches * 10) / 12
-  return ft < 1 ? `~${Math.round(qrInches * 10)}in` : `~${ft.toFixed(1)} ft`
-}
-
-// The label always carries: name band, big number, description, item list, QR.
-// (Location is intentionally NOT printed — it's an app-only field.)
-function labelFields(bin: { description: string; items: string[] }) {
-  return {
-    showDesc: !!bin.description,
-    showItems: bin.items.length > 0,
-  }
-}
-type LabelFields = ReturnType<typeof labelFields>
-
-// Label anatomy (both layouts):
-//   [stripe] [ NAME band, full width ] [ body ]
-//   body — stack:  #number / description / items / QR (fills rest)
-//   body — split:  left col (#number / description / items) | QR (full height)
-function labelMetrics(w: number, h: number, layout: LabelLayout, _f: LabelFields) {
-  const pad = clamp(Math.min(w, h) * 0.05, 0.04, 0.22)
-  const stripePx = clamp(h * 96 * 0.028, 4, 16)
-  const innerW = w - pad * 2
-  const innerWpx = innerW * 96
-  const innerHpx = (h - pad * 2) * 96 - stripePx
-
-  // Name band across the top. One line on short labels, two when there's room;
-  // capped so it can't eat a small label.
-  const nameLines = h >= 2.4 ? 2 : 1
-  const namePx = clamp(innerWpx * 0.14, 8, 40)
-  const nameBandPx = Math.min(namePx * 1.2 * nameLines + 3, innerHpx * 0.26)
-
-  const bodyHpx = innerHpx - nameBandPx
-  const colW = layout === 'split' ? innerW * 0.5 : innerW
-
-  const numPx = clamp(colW * 96 * 0.30, 11, bodyHpx * 0.4)
-  const numRowPx = numPx * 1.16
-  const bodyPx = clamp(numPx * 0.3, 6, 16)
-
-  // QR is priority: it gets a fixed share of the body, and the description/
-  // item text is what shrinks (clipped) when space is tight — not the QR.
-  const qrPx = layout === 'split'
-    ? clamp(Math.min(bodyHpx - 4, innerWpx * 0.5), 60, bodyHpx)
-    : clamp(Math.min(bodyHpx * 0.58, innerWpx), 60, Math.max(60, bodyHpx - numRowPx - pad * 10))
-
-  return { pad, stripePx, namePx, numPx, bodyPx, qrPx: Math.round(qrPx) }
-}
-
-// ─── Cut Contour SVG Overlay ──────────────────────────────────────────────────
-// Returns an SVG element that sits on top of the label as an overlay
-// Uses a rounded rectangle with the specified stroke
-
-function CutContourOverlay({
-  w, h, cut
-}: { w: number; h: number; cut: CutContourSettings }) {
-  if (!cut.enabled) return null
-  const off    = cut.offset  // can be negative
-  const radius = Math.max(0, 10 + off * 96)  // 10px base radius, scale with offset
-  const inset  = -off * 96   // positive offset means outside (negative inset)
-  const sw     = 1.5
-
-  return (
-    <svg
-      style={{
-        position: 'absolute',
-        top: `${inset}px`,
-        left: `${inset}px`,
-        width: `${w * 96 + Math.abs(inset) * 2}px`,
-        height: `${h * 96 + Math.abs(inset) * 2}px`,
-        pointerEvents: 'none',
-        overflow: 'visible',
-        zIndex: 10,
-      }}
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      <rect
-        x={sw / 2}
-        y={sw / 2}
-        width={w * 96 + Math.abs(inset) * 2 - sw}
-        height={h * 96 + Math.abs(inset) * 2 - sw}
-        rx={radius}
-        ry={radius}
-        fill="none"
-        stroke={cut.color}
-        strokeWidth={sw}
-        strokeDasharray="6 3"
-      />
-    </svg>
-  )
-}
-
-// Cut contour SVG string for print HTML
-function cutContourSvgStr(w: number, h: number, cut: CutContourSettings): string {
-  if (!cut.enabled) return ''
-  const off    = cut.offset
-  const radius = Math.max(0, 10 + off * 96)
-  const inset  = -off * 96
-  const sw     = 1.5
-  const W      = w * 96 + Math.abs(inset) * 2
-  const H      = h * 96 + Math.abs(inset) * 2
-
-  return `<svg xmlns="http://www.w3.org/2000/svg"
-    style="position:absolute;top:${inset}px;left:${inset}px;width:${W}px;height:${H}px;pointer-events:none;overflow:visible;z-index:10">
-    <title>${escapeHtml(cut.swatchName)}</title>
-    <rect x="${sw/2}" y="${sw/2}" width="${W-sw}" height="${H-sw}"
-      rx="${radius}" ry="${radius}"
-      fill="none" stroke="${safeColor(cut.color)}" stroke-width="${sw}" stroke-dasharray="6 3"/>
-  </svg>`
-}
-
-// ─── Label Card ────────────────────────────────────────────────────────────────
-
-function LabelCard({ bin, w, h, layout, cut }: {
-  bin: BinData; w: number; h: number; layout: LabelLayout; cut: CutContourSettings
-}) {
-  const qrUrl = `${window.location.origin}/bin/${bin.id}`
-  const f = labelFields(bin)
-  const m = labelMetrics(w, h, layout, f)
-
-  const nameBand = (
-    <div style={{fontWeight:800,fontSize:m.namePx,color:'#0f172a',lineHeight:1.15,wordBreak:'break-word',flexShrink:0,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical' as const}}>
-      {bin.name}
-    </div>
-  )
-  const num = (
-    <div style={{fontFamily:'monospace',fontSize:m.numPx,color:'#0f172a',fontWeight:900,lineHeight:1.12,letterSpacing:'-0.02em',flexShrink:0,overflow:'hidden'}}>
-      #{formatBinNumber(bin.binNumber)}
-    </div>
-  )
-  const detail = (
-    <div style={{overflow:'hidden',minHeight:0}}>
-      {f.showDesc&&(
-        <div style={{fontSize:m.bodyPx,color:'#475569',marginTop:m.bodyPx*0.4,lineHeight:1.25,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical' as const}}>
-          {bin.description}
-        </div>
-      )}
-      {f.showItems&&(
-        <div style={{fontSize:m.bodyPx,color:'#0f172a',marginTop:m.bodyPx*0.5,lineHeight:1.3,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:3,WebkitBoxOrient:'vertical' as const}}>
-          {bin.items.join(', ')}
-        </div>
-      )}
-    </div>
-  )
-  const qr = (
-    <div style={{width:m.qrPx,height:m.qrPx,maxWidth:'100%',maxHeight:'100%',flexShrink:0}}>
-      <QRCodeSVG value={qrUrl} size={m.qrPx} style={{width:'100%',height:'100%',display:'block'}}/>
-    </div>
-  )
-
-  return (
-    // Outer wrapper is NOT clipped so the cut contour (which sits outside the
-    // label edge) stays visible; the inner box keeps overflow:hidden for the
-    // rounded-corner clip of the color stripe.
-    <div style={{position:'relative',width:`${w}in`,height:`${h}in`,pageBreakInside:'avoid',boxSizing:'border-box'}}>
-      <div style={{width:'100%',height:'100%',border:'1.5px solid #cbd5e1',borderRadius:'8px',overflow:'hidden',backgroundColor:'white',display:'flex',flexDirection:'column',boxSizing:'border-box'}}>
-        <div style={{height:m.stripePx,backgroundColor:bin.color,flexShrink:0,WebkitPrintColorAdjust:'exact',printColorAdjust:'exact'} as React.CSSProperties}/>
-        <div style={{flex:1,display:'flex',flexDirection:'column',padding:`${m.pad}in`,overflow:'hidden',minHeight:0}}>
-          {nameBand}
-          {layout==='split'?(
-            <div style={{flex:1,display:'flex',flexDirection:'row',gap:`${m.pad}in`,alignItems:'stretch',overflow:'hidden',minHeight:0,marginTop:m.pad*24}}>
-              <div style={{flex:1,minWidth:0,display:'flex',flexDirection:'column',overflow:'hidden'}}>
-                {num}
-                <div style={{marginTop:m.bodyPx*0.3,overflow:'hidden',minHeight:0}}>{detail}</div>
-              </div>
-              <div style={{flexShrink:0,alignSelf:'center',maxWidth:'48%',maxHeight:'100%',display:'flex'}}>{qr}</div>
-            </div>
-          ):(
-            <>
-              <div style={{flexShrink:0,marginTop:m.pad*20}}>{num}</div>
-              <div style={{flex:'0 1 auto',minHeight:0,overflow:'hidden',marginTop:m.bodyPx*0.3}}>{detail}</div>
-              <div style={{flex:'1 0 auto',display:'flex',alignItems:'center',justifyContent:'center',minHeight:0,overflow:'hidden',marginTop:m.pad*20}}>{qr}</div>
-            </>
-          )}
-        </div>
-      </div>
-      <CutContourOverlay w={w} h={h} cut={cut} />
-    </div>
-  )
-}
-
-// ─── Print HTML Helpers ───────────────────────────────────────────────────────
-
-function buildLabelHtml(bin: BinData, w: number, h: number, cut: CutContourSettings, layout: LabelLayout): string {
-  const qrUrl  = `${window.location.origin}/bin/${bin.id}`
-  const f      = labelFields(bin)
-  const m      = labelMetrics(w, h, layout, f)
-  const qrSvg  = ReactDOMServer.renderToStaticMarkup(
-    <QRCodeSVG value={qrUrl} size={m.qrPx} style={{width:'100%',height:'100%',display:'block'}}/>
-  )
-  const numStr = String(bin.binNumber).padStart(3,'0')
-  const stripe = safeColor(bin.color)
-
-  const clamp2 = 'overflow:hidden;display:-webkit-box;-webkit-box-orient:vertical'
-  const nameHtml = `<div style="font-weight:800;font-size:${m.namePx}px;color:#0f172a;line-height:1.15;word-break:break-word;flex-shrink:0;-webkit-line-clamp:2;${clamp2}">${escapeHtml(bin.name)}</div>`
-  const numHtml  = `<div style="font-family:monospace;font-size:${m.numPx}px;color:#0f172a;font-weight:900;line-height:1.12;letter-spacing:-0.02em;flex-shrink:0;overflow:hidden">#${numStr}</div>`
-  const detailHtml = `<div style="overflow:hidden;min-height:0">
-    ${f.showDesc?`<div style="font-size:${m.bodyPx}px;color:#475569;margin-top:${m.bodyPx*0.4}px;line-height:1.25;-webkit-line-clamp:2;${clamp2}">${escapeHtml(bin.description)}</div>`:''}
-    ${f.showItems?`<div style="font-size:${m.bodyPx}px;color:#0f172a;margin-top:${m.bodyPx*0.5}px;line-height:1.3;-webkit-line-clamp:3;${clamp2}">${escapeHtml(bin.items.join(', '))}</div>`:''}
-  </div>`
-  const qrHtml = `<div style="width:${m.qrPx}px;height:${m.qrPx}px;max-width:100%;max-height:100%;flex-shrink:0">${qrSvg}</div>`
-
-  const body = layout === 'split'
-    ? `<div style="flex:1;display:flex;flex-direction:row;gap:${m.pad}in;align-items:stretch;overflow:hidden;min-height:0;margin-top:${m.pad*0.5}in">
-         <div style="flex:1;min-width:0;display:flex;flex-direction:column;overflow:hidden">
-           ${numHtml}
-           <div style="margin-top:${m.bodyPx*0.3}px;overflow:hidden;min-height:0">${detailHtml}</div>
-         </div>
-         <div style="flex-shrink:0;align-self:center;max-width:48%;max-height:100%;display:flex">${qrHtml}</div>
-       </div>`
-    : `<div style="flex-shrink:0;margin-top:${m.pad*0.42}in">${numHtml}</div>
-       <div style="flex:0 1 auto;min-height:0;overflow:hidden;margin-top:${m.bodyPx*0.3}px">${detailHtml}</div>
-       <div style="flex:1 0 auto;display:flex;align-items:center;justify-content:center;min-height:0;overflow:hidden;margin-top:${m.pad*0.42}in">${qrHtml}</div>`
-
-  return `
-    <div style="position:relative;width:${w}in;height:${h}in;page-break-inside:avoid;box-sizing:border-box;">
-      <div style="width:100%;height:100%;border:1.5px solid #cbd5e1;border-radius:8px;overflow:hidden;background:white;display:flex;flex-direction:column;box-sizing:border-box;">
-        <div style="height:${m.stripePx}px;background:${stripe};flex-shrink:0;-webkit-print-color-adjust:exact;print-color-adjust:exact;color-adjust:exact"></div>
-        <div style="flex:1;display:flex;flex-direction:column;padding:${m.pad}in;overflow:hidden;min-height:0">
-          ${nameHtml}
-          ${body}
-        </div>
-      </div>
-      ${cutContourSvgStr(w,h,cut)}
-    </div>`
-}
-
-// `pageCss` is the full @page rule block(s) for this document.
-function printHtmlWrapper(body: string, pageCss: string, cut: CutContourSettings): string {
-  const swatchComment = String(cut.swatchName ?? '').replace(/[*/<>]/g, '')
-  const swatchCss = cut.enabled
-    ? `/* Cut contour swatch: ${swatchComment} = ${safeColor(cut.color)} */\n    .cut-contour { stroke: ${safeColor(cut.color)}; }`
-    : ''
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>StorageSync Labels</title>
-  <style>
-    *{margin:0;padding:0;box-sizing:border-box}
-    html,body{background:white;-webkit-print-color-adjust:exact;print-color-adjust:exact;color-adjust:exact}
-    ${pageCss}
-    ${swatchCss}
-  </style></head><body>
-  ${body}
-  <script>window.onload=function(){setTimeout(function(){window.print()},400)}<\/script>
-  </body></html>`
-}
-
-function openPrint(html: string) {
-  const blob = new Blob([html],{type:'text/html'})
-  const url  = URL.createObjectURL(blob)
-  const win  = window.open(url,'_blank')
-  if(win) setTimeout(()=>URL.revokeObjectURL(url),10000)
-}
-
-function buildHomePrint(bins:BinData[], lpp:1|2|3|4|5|6, cut:CutContourSettings) {
-  const {cols,rows}=HOME_GRID[lpp], gap=0.12, pw=7.5, ph=10
-  const lw=(pw-gap*(cols-1))/cols, lh=(ph-gap*(rows-1))/rows
-  const perPage=cols*rows, layout=pickLayout(lw,lh)
-  const pages:BinData[][]=[]
-  for(let i=0;i<bins.length;i+=perPage) pages.push(bins.slice(i,i+perPage))
-  const body=pages.map((pg,pi)=>`
-    <div style="display:grid;grid-template-columns:repeat(${cols},${lw}in);grid-template-rows:repeat(${rows},${lh}in);gap:${gap}in;width:${pw}in;height:${ph}in;${pi<pages.length-1?'page-break-after:always':''}">
-      ${pg.map(b=>buildLabelHtml(b,lw,lh,cut,layout)).join('')}
-    </div>`).join('')
-  return printHtmlWrapper(body,'@page{size:letter portrait;margin:0.5in}',cut)
-}
-
-function buildThermalPrint(bins:BinData[], lw:number, lh:number, mH:number, mV:number, cut:CutContourSettings) {
-  const layout=pickLayout(lw-mH*2,lh-mV*2)
-  const body=bins.map((b,i)=>`
-    <div style="width:${lw}in;height:${lh}in;padding:${mV}in ${mH}in;box-sizing:border-box;${i<bins.length-1?'page-break-after:always':''}">
-      ${buildLabelHtml(b,lw-mH*2,lh-mV*2,cut,layout)}
-    </div>`).join('')
-  return printHtmlWrapper(body,`@page{size:${lw}in ${lh}in;margin:0}`,cut)
-}
-
-function wideRowsPerSheet(sheetLen:number, labelH:number, gap:number, margin:number): number {
-  return Math.max(1, Math.floor((sheetLen - margin*2 + gap) / (labelH + gap)))
-}
-
-function buildWideFormatPrint(bins:BinData[], sheetW:number, sheetLen:number, cols:number, labelW:number, labelH:number, gap:number, margin:number, autoFit:boolean, cut:CutContourSettings) {
-  const perSheet = Math.max(1, cols * wideRowsPerSheet(sheetLen, labelH, gap, margin))
-  const sheets:BinData[][]=[]
-  for(let i=0;i<bins.length;i+=perSheet) sheets.push(bins.slice(i,i+perSheet))
-  if(sheets.length===0) sheets.push([])
-  const layout=pickLayout(labelW,labelH)
-  const heights=sheets.map(pg=>{
-    const rows=Math.max(1,Math.ceil((pg.length||1)/cols))
-    return autoFit ? +(rows*labelH+(rows-1)*gap+margin*2).toFixed(3) : sheetLen
-  })
-  // One named @page per sheet so each PDF page is exactly the sheet size —
-  // `size: <w> auto` is not honored by Chrome's print-to-PDF and falls back
-  // to Letter, which is what caused the blank tails / wrong layout.
-  const pageCss=sheets.map((_,si)=>`@page wsheet${si}{size:${sheetW}in ${heights[si]}in;margin:0}`).join('\n    ')
-  const body=sheets.map((pg,si)=>
-    `<div style="page:wsheet${si};width:${sheetW}in;height:${heights[si]}in;padding:${margin}in;box-sizing:border-box;position:relative;${si<sheets.length-1?'page-break-after:always':''}">
-      <div style="display:grid;grid-template-columns:repeat(${cols},${labelW}in);gap:${gap}in;align-content:start">
-        ${pg.map(b=>buildLabelHtml(b,labelW,labelH,cut,layout)).join('')}
-      </div>
-    </div>`).join('')
-  return printHtmlWrapper(body,pageCss,cut)
-}
-
-function buildCustomPrint(bins:BinData[], s:CustomSettings, cut:CutContourSettings) {
-  const lw=(s.pageW-s.marginH*2-s.gap*(s.cols-1))/s.cols
-  const lh=(s.pageH-s.marginV*2-s.gap*(s.rows-1))/s.rows
-  const perPage=s.cols*s.rows, layout=pickLayout(lw,lh)
-  const pages:BinData[][]=[]
-  for(let i=0;i<bins.length;i+=perPage) pages.push(bins.slice(i,i+perPage))
-  const body=pages.map((pg,pi)=>`
-    <div style="width:${s.pageW-s.marginH*2}in;height:${s.pageH-s.marginV*2}in;display:grid;grid-template-columns:repeat(${s.cols},${lw}in);grid-template-rows:repeat(${s.rows},${lh}in);gap:${s.gap}in;${pi<pages.length-1?'page-break-after:always':''}">
-      ${pg.map(b=>buildLabelHtml(b,lw,lh,cut,layout)).join('')}
-    </div>`).join('')
-  return printHtmlWrapper(body,`@page{size:${s.pageW}in ${s.pageH}in;margin:${s.marginV}in ${s.marginH}in}`,cut)
+const SAMPLE_BIN: LabelBin = {
+  id: 'sample', binNumber: 1, name: 'Sample bin', description: 'x', color: '#3b82f6',
+  items: ['x'], url: 'https://example.com/bin/sample',
 }
 
 // ─── Num Input ────────────────────────────────────────────────────────────────
@@ -443,18 +68,16 @@ function NumInput({label,value,onChange,min=0.1,max=60,step=0.1,suffix='"'}:{
 // To-scale sketch of one row of labels across the sheet, with the resulting
 // label size and an estimated QR scan distance.
 
-function WideFormatDiagram({sheetW,margin,cols,gap,labelW,labelH,overflow}:{
-  sheetW:number;margin:number;cols:number;gap:number;labelW:number;labelH:number;overflow:boolean
+function WideFormatDiagram({sheetW,margin,cols,gap,labelW,labelH,qrIn,overflow}:{
+  sheetW:number;margin:number;cols:number;gap:number;labelW:number;labelH:number;qrIn:number;overflow:boolean
 }) {
   const VW = 300
-  const scale = VW / sheetW                          // px per inch
+  const scale = VW / sheetW
   const startX = margin * scale
   const boxW = labelW * scale
   const drawH = Math.max(28, Math.min(labelH * scale, 150))
   const gapPx = gap * scale
   const shown = Math.min(cols, 8)
-  const lay = pickLayout(labelW, labelH)
-  const qrIn = labelMetrics(labelW, labelH, lay, labelFields({description:'x', items:['x']})).qrPx / 96
   const qrPx = Math.max(0, Math.min(qrIn * scale, boxW - 8, drawH - 8))
 
   return (
@@ -480,7 +103,7 @@ function WideFormatDiagram({sheetW,margin,cols,gap,labelW,labelH,overflow}:{
       </svg>
       <div className="mt-2 text-xs text-muted-foreground flex flex-wrap gap-x-3 gap-y-0.5">
         <span>Label <strong className="text-foreground">{labelW.toFixed(2)}" × {labelH.toFixed(2)}"</strong></span>
-        <span>QR ≈ <strong className="text-foreground">{qrIn.toFixed(1)}"</strong> → scans {scanDistanceLabel(qrIn)}</span>
+        {qrIn>0 && <span>QR ≈ <strong className="text-foreground">{qrIn.toFixed(1)}"</strong> → scans {scanDistanceLabel(qrIn)}</span>}
         {overflow && <span className="text-destructive font-medium">Too many across — reduce count or gap</span>}
       </div>
     </div>
@@ -520,7 +143,7 @@ function CutContourPanel({cut,setCut}:{cut:CutContourSettings;setCut:(c:CutConto
 
             {/* Color */}
             <div className="space-y-1">
-              <Label className="text-xs">Contour color</Label>
+              <Label className="text-xs">Preview color</Label>
               <div className="flex items-center gap-2">
                 <input type="color" value={cut.color}
                   onChange={e=>setCut({...cut,color:e.target.value})}
@@ -542,9 +165,41 @@ function CutContourPanel({cut,setCut}:{cut:CutContourSettings;setCut:(c:CutConto
 
           <div className="rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 px-3 py-2">
             <p className="text-xs text-amber-800 dark:text-amber-300">
-              <strong>Tip:</strong> Common swatch names — <span className="font-mono">CutContour</span> (Onyx, Caldera), <span className="font-mono">Die Cut</span> (Illustrator), <span className="font-mono">RDG_WHITE</span> (Roland). Check your printer software docs.
+              The cut line is a solid 0.02" stroke in a spot swatch with this name. Common names — <span className="font-mono">CutContour</span> (Onyx, Caldera, VersaWorks), <span className="font-mono">Die Cut</span> (Illustrator), <span className="font-mono">RDG_WHITE</span> (Roland). Check your printer software docs.
             </p>
           </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Print Black Panel ────────────────────────────────────────────────────────
+
+function BlackInkPanel({black,setBlack}:{black:BlackInkSettings;setBlack:(b:BlackInkSettings)=>void}) {
+  return (
+    <div className="border border-border rounded-xl overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3 bg-muted/30">
+        <div className="flex items-center gap-2">
+          <Droplet className="h-4 w-4 text-muted-foreground"/>
+          <span className="text-sm font-medium">Print black (spot color)</span>
+          {black.enabled && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium">ON</span>
+          )}
+        </div>
+        <Switch checked={black.enabled} onCheckedChange={v=>setBlack({...black,enabled:v})}/>
+      </div>
+
+      {black.enabled && (
+        <div className="p-4 space-y-2">
+          <Label className="text-xs">Black swatch name</Label>
+          <Input value={black.swatchName}
+            onChange={e=>setBlack({...black,swatchName:e.target.value})}
+            className="h-8 text-sm"
+            placeholder="RVW-BK22A"/>
+          <p className="text-xs text-muted-foreground">
+            All black text and QR codes print in this spot swatch (100%) so the RIP maps it to true rich black. Must match the swatch name in your RIP. Turn off to print standard process black.
+          </p>
         </div>
       )}
     </div>
@@ -556,7 +211,12 @@ function CutContourPanel({cut,setCut}:{cut:CutContourSettings;setCut:(c:CutConto
 export default function LabelsPage() {
   const {bins} = useBins()
   const {items} = useItems()
+  const {toast} = useToast()
   const [searchParams] = useSearchParams()
+
+  const [fonts,setFonts] = useState<LabelFonts|null>(null)
+  const [fontError,setFontError] = useState(false)
+  useEffect(()=>{ loadLabelFonts().then(setFonts).catch(()=>setFontError(true)) },[])
 
   // item names grouped by bin, for printing the contents list on each label
   const itemsByBin = useMemo(() => {
@@ -572,9 +232,7 @@ export default function LabelsPage() {
   })
   const [showPreview,setShowPreview] = useState(false)
   const [mode,setMode]               = useState<PrintMode>('home')
-  const [scale,setScale]             = useState(1)
   const [settingsOpen,setSettingsOpen] = useState(true)
-  const containerRef                 = useRef<HTMLDivElement>(null)
 
   const [homeLpp,setHomeLpp]   = useState<1|2|3|4|5|6>(2)
   const [thermal,setThermal]   = useState<ThermalSettings>({labelW:4,labelH:6,marginH:0.1,marginV:0.1})
@@ -584,75 +242,107 @@ export default function LabelsPage() {
   })
   const [custom,setCustom]     = useState<CustomSettings>({pageW:8.5,pageH:11,cols:2,rows:3,marginH:0.5,marginV:0.5,gap:0.15})
   const [cut,setCut]           = useState<CutContourSettings>({enabled:false,offset:0.05,color:'#FF00CC',swatchName:'CutContour'})
+  const [black,setBlack]       = useState<BlackInkSettings>({enabled:true,swatchName:'RVW-BK22A'})
+  const [outlineText,setOutlineText] = useState(false)
 
   const updateWide = (updates: Partial<WideFormatSettings>) => setWide(prev => ({...prev,...updates}))
 
   const toggleBin   = (id:string) => setSelected(prev=>{const n=new Set(prev);n.has(id)?n.delete(id):n.add(id);return n})
   const selectAll   = () => setSelected(new Set(bins.map(b=>b.id)))
   const deselectAll = () => setSelected(new Set())
-  const selectedBins: BinData[] = bins.filter(b=>selected.has(b.id)).map(b => ({
+  const selectedBins: LabelBin[] = useMemo(() => bins.filter(b=>selected.has(b.id)).map(b => ({
     id: b.id, binNumber: b.binNumber, name: b.name,
     description: b.description, color: b.color,
     items: itemsByBin[b.id] ?? [],
-  }))
+    url: `${window.location.origin}/bin/${b.id}`,
+  })), [bins, selected, itemsByBin])
 
-  // Home
-  const {cols:hCols,rows:hRows}=HOME_GRID[homeLpp]
-  const hGap=0.12, hLw=(7.5-hGap*(hCols-1))/hCols, hLh=(10-hGap*(hRows-1))/hRows
+  // Derived sizes for the settings panels
+  const home = homeLabelSize(homeLpp)
+  const wideSize = wideLabelSize(wide)
+  const wideRowsPer = wideRowsPerSheet(wide.sheetLen, wideSize.h, wide.gap, wide.margin)
+  const customSize = customLabelSize(custom)
+  const wideQrIn = useMemo(() => {
+    if (!fonts) return 0
+    const s = wideLabelSize(wide)
+    return layoutLabel(SAMPLE_BIN, s.w, s.h, pickLayout(s.w, s.h), fonts.measurer).qrSize
+  }, [fonts, wide])
 
-  // Wide — label width from the sheet math, height locked to the shape ratio.
-  const wideRawW   = (wide.sheetW - wide.margin*2 - wide.gap*(wide.colsAcross-1)) / wide.colsAcross
-  const wideOverflow = wideRawW < 0.5
-  const wideLabelW = calcLabelW(wide.sheetW, wide.colsAcross, wide.gap, wide.margin)
-  const wideLabelH = wideLabelW * WIDE_SHAPES[wide.shape].ratio
-  const wideRowsPer = wideRowsPerSheet(wide.sheetLen, wideLabelH, wide.gap, wide.margin)
-  const widePerSheet = Math.max(1, wide.colsAcross * wideRowsPer)
-  const wideSheets: BinData[][] = []
-  for (let i=0;i<selectedBins.length;i+=widePerSheet) wideSheets.push(selectedBins.slice(i,i+widePerSheet))
-  const wideSheetHeights = (wideSheets.length ? wideSheets : [[]]).map(pg => {
-    const rows = Math.max(1, Math.ceil((pg.length||1)/wide.colsAcross))
-    return wide.autoFit ? rows*wideLabelH + (rows-1)*wide.gap + wide.margin*2 : wide.sheetLen
-  })
+  // The pages both the preview and the PDF are built from
+  const pages: PageSpec[] = useMemo(() => {
+    if (mode==='home')    return buildHomePages(selectedBins, homeLpp)
+    if (mode==='thermal') return buildThermalPages(selectedBins, thermal.labelW, thermal.labelH, thermal.marginH, thermal.marginV)
+    if (mode==='wideformat') return wideLabelSize(wide).overflow ? [] : buildWidePages(selectedBins, wide)
+    const cs = customLabelSize(custom)
+    return cs.w > 0 && cs.h > 0 ? buildCustomPages(selectedBins, custom) : []
+  }, [mode, selectedBins, homeLpp, thermal, wide, custom])
 
-  // Custom
-  const cLw = (custom.pageW-custom.marginH*2-custom.gap*(custom.cols-1))/custom.cols
-  const cLh = (custom.pageH-custom.marginV*2-custom.gap*(custom.rows-1))/custom.rows
+  const spotBlack = mode === 'wideformat' && black.enabled
 
-  // Scale preview
-  const calcScale = useCallback(()=>{
-    let pW=8.5, pH=11
-    if(mode==='thermal')    {pW=thermal.labelW; pH=thermal.labelH}
-    if(mode==='wideformat') {pW=wide.sheetW; pH=Math.max(1,Math.min(...wideSheetHeights))}
-    if(mode==='custom')     {pW=custom.pageW; pH=custom.pageH}
-    const aW=window.innerWidth-48, aH=window.innerHeight-120
-    setScale(Math.min(1, aW/(pW*96), aH/(pH*96)))
-  },[mode,thermal,wide,wideSheetHeights,custom])
-
+  // Build the PDF whenever the preview is open, so Share/Download act instantly on tap
+  const [pdf,setPdf] = useState<{blob:Blob|null;building:boolean;error:string}>({blob:null,building:false,error:''})
   useEffect(()=>{
-    if(!showPreview) return
-    calcScale()
-    window.addEventListener('resize',calcScale)
-    return ()=>window.removeEventListener('resize',calcScale)
-  },[showPreview,calcScale])
+    if (!showPreview) {
+      setPdf(p=>p.blob===null&&!p.building&&!p.error ? p : {blob:null,building:false,error:''})
+      return
+    }
+    if (!fonts || pages.length===0) return
+    let cancelled = false
+    setPdf(p=>p.building&&!p.error ? p : {...p,building:true,error:''})
+    const t = setTimeout(async ()=>{
+      try {
+        const { buildPdf } = await import('@/lib/labels/pdf')
+        const bytes = await buildPdf(pages, fonts, { cut, black: { spot: spotBlack, swatchName: black.swatchName }, outlineText })
+        if (!cancelled) setPdf({blob:new Blob([bytes as BlobPart],{type:'application/pdf'}),building:false,error:''})
+      } catch (err) {
+        console.error('PDF build failed', err)
+        if (!cancelled) setPdf({blob:null,building:false,error:'Could not build the PDF'})
+      }
+    },150)
+    return ()=>{ cancelled = true; clearTimeout(t) }
+  },[showPreview, fonts, pages, cut, black.swatchName, spotBlack, outlineText])
 
-  const handlePrint = () => {
-    let html=''
-    if(mode==='home')       html=buildHomePrint(selectedBins,homeLpp,cut)
-    if(mode==='thermal')    html=buildThermalPrint(selectedBins,thermal.labelW,thermal.labelH,thermal.marginH,thermal.marginV,cut)
-    if(mode==='wideformat') html=buildWideFormatPrint(selectedBins,wide.sheetW,wide.sheetLen,wide.colsAcross,wideLabelW,wideLabelH,wide.gap,wide.margin,wide.autoFit,cut)
-    if(mode==='custom')     html=buildCustomPrint(selectedBins,custom,cut)
-    openPrint(html)
+  const fileName = `StorageSync-labels-${new Date().toISOString().slice(0,10)}.pdf`
+
+  const canShareFiles = useMemo(()=>{
+    try {
+      return typeof navigator.canShare==='function'
+        && window.matchMedia('(pointer: coarse)').matches
+        && navigator.canShare({files:[new File([''],'x.pdf',{type:'application/pdf'})]})
+    } catch { return false }
+  },[])
+
+  const download = () => {
+    if (!pdf.blob) return
+    const url = URL.createObjectURL(pdf.blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = fileName
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(()=>URL.revokeObjectURL(url),60000)
+    toast(`Saved ${fileName} — check your Downloads folder`)
+  }
+
+  const share = async () => {
+    if (!pdf.blob) return
+    const file = new File([pdf.blob], fileName, {type:'application/pdf'})
+    try {
+      await navigator.share({files:[file], title:'StorageSync labels'})
+      toast('PDF shared')
+    } catch (err) {
+      if (err instanceof DOMException && err.name==='AbortError') return
+      download()
+    }
   }
 
   const MODE_LABELS:Record<PrintMode,string>={
     home:'🏠 Home Printer', thermal:'🖨️ Thermal', wideformat:'📏 Wide Format', custom:'⚙️ Custom'
   }
 
-  // Preview pages
-  const homePages:BinData[][]=[]
-  for(let i=0;i<selectedBins.length;i+=hCols*hRows) homePages.push(selectedBins.slice(i,i+hCols*hRows))
-  const customPages:BinData[][]=[]
-  for(let i=0;i<selectedBins.length;i+=custom.cols*custom.rows) customPages.push(selectedBins.slice(i,i+custom.cols*custom.rows))
+  const previewPages = mode==='thermal' ? pages.slice(0,3) : pages
+  const wideHeights = mode==='wideformat' ? pages.map(p=>p.h) : []
 
   return (
     <div className="p-4 md:p-8 max-w-3xl mx-auto animate-fade-in">
@@ -662,10 +352,11 @@ export default function LabelsPage() {
           <h1 className="font-display font-bold text-2xl md:text-3xl">Labels</h1>
           <p className="text-muted-foreground text-sm mt-1">Select bins and configure print settings</p>
         </div>
-        <Button onClick={()=>setShowPreview(true)} disabled={selected.size===0}>
-          <Printer className="h-4 w-4"/> Preview & Print ({selected.size})
+        <Button onClick={()=>setShowPreview(true)} disabled={selected.size===0 || !fonts}>
+          {fonts || fontError ? <Printer className="h-4 w-4"/> : <Loader2 className="h-4 w-4 animate-spin"/>} Preview & Print ({selected.size})
         </Button>
       </div>
+      {fontError && <p className="text-sm text-destructive mb-4">Couldn't load label fonts. Reload the page to try again.</p>}
 
       {/* Mode tabs */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
@@ -700,7 +391,7 @@ export default function LabelsPage() {
                     ))}
                   </div>
                 </div>
-                <p className="text-xs text-muted-foreground">Label size: {hLw.toFixed(2)}" × {hLh.toFixed(2)}"</p>
+                <p className="text-xs text-muted-foreground">Label size: {home.w.toFixed(2)}" × {home.h.toFixed(2)}"</p>
               </div>
             )}
 
@@ -766,17 +457,19 @@ export default function LabelsPage() {
 
                 <WideFormatDiagram
                   sheetW={wide.sheetW} margin={wide.margin} cols={wide.colsAcross} gap={wide.gap}
-                  labelW={wideLabelW} labelH={wideLabelH} overflow={wideOverflow}
+                  labelW={wideSize.w} labelH={wideSize.h} qrIn={wideQrIn} overflow={wideSize.overflow}
                 />
 
-                {selectedBins.length>0 && !wideOverflow && (
+                {selectedBins.length>0 && !wideSize.overflow && (
                   <p className="text-xs text-muted-foreground">
-                    {wideSheets.length} sheet{wideSheets.length!==1?'s':''} · {wide.colsAcross} × {wideRowsPer} labels per sheet ·
-                    {wide.autoFit
-                      ? <> last sheet ≈ <strong className="text-foreground">{Math.max(...wideSheetHeights).toFixed(1)}"</strong> tall</>
+                    {pages.length} sheet{pages.length!==1?'s':''} · {wide.colsAcross} × {wideRowsPer} labels per sheet ·
+                    {wide.autoFit && wideHeights.length>0
+                      ? <> last sheet ≈ <strong className="text-foreground">{Math.max(...wideHeights).toFixed(1)}"</strong> tall</>
                       : <> {wide.sheetLen}" per sheet</>}
                   </p>
                 )}
+
+                <BlackInkPanel black={black} setBlack={setBlack}/>
               </div>
             )}
 
@@ -792,12 +485,20 @@ export default function LabelsPage() {
                   <NumInput label="V margin"    value={custom.marginV} onChange={v=>setCustom(c=>({...c,marginV:v}))} min={0} max={3} step={0.05}/>
                   <NumInput label="Gap"         value={custom.gap}     onChange={v=>setCustom(c=>({...c,gap:v}))}     min={0} max={2} step={0.05}/>
                 </div>
-                {cLw>0&&cLh>0&&<p className="text-xs text-muted-foreground">Label size: {cLw.toFixed(2)}" × {cLh.toFixed(2)}" · {custom.cols*custom.rows} per page</p>}
+                {customSize.w>0&&customSize.h>0&&<p className="text-xs text-muted-foreground">Label size: {customSize.w.toFixed(2)}" × {customSize.h.toFixed(2)}" · {custom.cols*custom.rows} per page</p>}
               </div>
             )}
 
             {/* CUT CONTOUR — available for all modes */}
             <CutContourPanel cut={cut} setCut={setCut}/>
+
+            <label className="flex items-center justify-between rounded-lg border border-border px-3 py-2.5">
+              <div>
+                <span className="text-sm font-medium">Outline text</span>
+                <p className="text-xs text-muted-foreground">Off: live text in Arial (already on your PC — nothing to install). On: converts all text to shapes so no fonts are needed at all, but it can't be edited afterward.</p>
+              </div>
+              <Switch checked={outlineText} onCheckedChange={setOutlineText}/>
+            </label>
           </div>
         )}
       </div>
@@ -843,11 +544,19 @@ export default function LabelsPage() {
                 </div>
               )}
               {cut.enabled&&<span style={{fontSize:'11px',color:'#f59e0b',display:'flex',alignItems:'center',gap:'4px'}}><Scissors size={12}/> Cut: {cut.swatchName}</span>}
-              <span style={{color:'#334155',fontSize:'11px'}}>{selectedBins.length} label{selectedBins.length!==1?'s':''}</span>
+              {spotBlack&&<span style={{fontSize:'11px',color:'#94a3b8',display:'flex',alignItems:'center',gap:'4px'}}><Droplet size={12}/> Black: {black.swatchName}</span>}
+              <span style={{color:'#64748b',fontSize:'11px'}}>{selectedBins.length} label{selectedBins.length!==1?'s':''}</span>
             </div>
-            <div style={{display:'flex',gap:'8px'}}>
-              <button onClick={handlePrint} style={{display:'flex',alignItems:'center',gap:'6px',backgroundColor:'#3b82f6',color:'white',border:'none',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontWeight:700,fontSize:13}}>
-                <Printer size={14}/> Print / Save PDF
+            <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
+              {pdf.building&&<span style={{color:'#94a3b8',fontSize:12,display:'flex',alignItems:'center',gap:6}}><Loader2 size={13} className="animate-spin"/> Preparing PDF…</span>}
+              {pdf.error&&<span style={{color:'#f87171',fontSize:12}}>{pdf.error}</span>}
+              {canShareFiles&&(
+                <button onClick={share} disabled={!pdf.blob||pdf.building} style={{display:'flex',alignItems:'center',gap:'6px',backgroundColor:'#3b82f6',color:'white',border:'none',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontWeight:700,fontSize:13,opacity:!pdf.blob||pdf.building?0.5:1}}>
+                  <Share2 size={14}/> Share / Email PDF
+                </button>
+              )}
+              <button onClick={download} disabled={!pdf.blob||pdf.building} style={{display:'flex',alignItems:'center',gap:'6px',backgroundColor:canShareFiles?'#1e293b':'#3b82f6',color:'white',border:'none',borderRadius:8,padding:'7px 14px',cursor:'pointer',fontWeight:700,fontSize:13,opacity:!pdf.blob||pdf.building?0.5:1}}>
+                <Download size={14}/> {canShareFiles?'Save':'Download PDF'}
               </button>
               <button onClick={()=>setShowPreview(false)} style={{width:32,height:32,borderRadius:7,border:'1px solid #1e293b',backgroundColor:'transparent',color:'#64748b',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}}>
                 <X size={15}/>
@@ -856,65 +565,20 @@ export default function LabelsPage() {
           </div>
 
           {/* Preview content */}
-          <div ref={containerRef} style={{flex:1,overflowY:'auto',overflowX:'hidden',display:'flex',flexDirection:'column',alignItems:'center',gap:'32px',padding:'24px 0'}}>
-
-            {mode==='home'&&homePages.map((pg,pi)=>(
-              <div key={pi} style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'8px'}}>
-                <p style={{color:'#475569',fontSize:'11px'}}>Page {pi+1} of {homePages.length}</p>
-                <div style={{width:`${8.5*96*scale}px`,height:`${11*96*scale}px`,position:'relative',flexShrink:0}}>
-                  <div style={{position:'absolute',top:0,left:0,transformOrigin:'top left',transform:`scale(${scale})`}}>
-                    <div style={{width:'8.5in',height:'11in',backgroundColor:'white',padding:'0.5in',boxSizing:'border-box',boxShadow:'0 8px 40px rgba(0,0,0,0.5)',display:'grid',gridTemplateColumns:`repeat(${hCols},${hLw}in)`,gridTemplateRows:`repeat(${hRows},${hLh}in)`,gap:`${hGap}in`}}>
-                      {pg.map(bin=><LabelCard key={bin.id} bin={bin} w={hLw} h={hLh} layout={pickLayout(hLw,hLh)} cut={cut}/>)}
-                    </div>
-                  </div>
-                </div>
+          <div style={{flex:1,overflowY:'auto',overflowX:'hidden',display:'flex',flexDirection:'column',alignItems:'center',gap:'32px',padding:'24px 16px'}}>
+            {fonts && previewPages.map((pg,i)=>(
+              <div key={i} style={{width:'100%',maxWidth:`${pg.w*96}px`,display:'flex',flexDirection:'column',gap:'8px'}}>
+                <p style={{color:'#64748b',fontSize:'11px'}}>
+                  {mode==='thermal'
+                    ? `Label ${i+1}${i===2&&pages.length>3?' (first 3 shown)':''}`
+                    : mode==='wideformat'
+                      ? `Sheet ${i+1} of ${pages.length} · ${pg.w}" × ${pg.h.toFixed(1)}" · label ${wideSize.w.toFixed(2)}" × ${wideSize.h.toFixed(2)}" (${WIDE_SHAPES[wide.shape].label})`
+                      : `Page ${i+1} of ${pages.length}`}
+                </p>
+                <PageSvg page={pg} measurer={fonts.measurer} cut={cut}/>
               </div>
             ))}
-
-            {mode==='thermal'&&selectedBins.slice(0,3).map((bin,i)=>(
-              <div key={i} style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'8px'}}>
-                <p style={{color:'#475569',fontSize:'11px'}}>Label {i+1}{i===2&&selectedBins.length>3?' (first 3 shown)':''}</p>
-                <div style={{width:`${thermal.labelW*96*scale}px`,height:`${thermal.labelH*96*scale}px`,position:'relative',flexShrink:0}}>
-                  <div style={{position:'absolute',top:0,left:0,transformOrigin:'top left',transform:`scale(${scale})`}}>
-                    <div style={{width:`${thermal.labelW}in`,height:`${thermal.labelH}in`,backgroundColor:'white',padding:`${thermal.marginV}in ${thermal.marginH}in`,boxSizing:'border-box',boxShadow:'0 8px 40px rgba(0,0,0,0.5)'}}>
-                      <LabelCard bin={bin} w={thermal.labelW-thermal.marginH*2} h={thermal.labelH-thermal.marginV*2} layout={pickLayout(thermal.labelW-thermal.marginH*2,thermal.labelH-thermal.marginV*2)} cut={cut}/>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
-
-            {mode==='wideformat'&&!wideOverflow&&(wideSheets.length?wideSheets:[[]]).map((pg,si)=>{
-              const sheetH=wideSheetHeights[si]||1
-              const lay=pickLayout(wideLabelW,wideLabelH)
-              return (
-                <div key={si} style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'8px'}}>
-                  <p style={{color:'#475569',fontSize:'11px'}}>Sheet {si+1} of {Math.max(1,wideSheets.length)} · {wide.sheetW}" × {sheetH.toFixed(1)}" · label {wideLabelW.toFixed(2)}" × {wideLabelH.toFixed(2)}" ({WIDE_SHAPES[wide.shape].label})</p>
-                  <div style={{width:`${wide.sheetW*96*scale}px`,height:`${sheetH*96*scale}px`,position:'relative',flexShrink:0}}>
-                    <div style={{position:'absolute',top:0,left:0,transformOrigin:'top left',transform:`scale(${scale})`}}>
-                      <div style={{width:`${wide.sheetW}in`,height:`${sheetH}in`,backgroundColor:'white',padding:`${wide.margin}in`,boxSizing:'border-box',boxShadow:'0 8px 40px rgba(0,0,0,0.5)'}}>
-                        <div style={{display:'grid',gridTemplateColumns:`repeat(${wide.colsAcross},${wideLabelW}in)`,gap:`${wide.gap}in`,alignContent:'start'}}>
-                          {pg.map(bin=><LabelCard key={bin.id} bin={bin} w={wideLabelW} h={wideLabelH} layout={lay} cut={cut}/>)}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
-
-            {mode==='custom'&&cLw>0&&cLh>0&&customPages.map((pg,pi)=>(
-              <div key={pi} style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'8px'}}>
-                <p style={{color:'#475569',fontSize:'11px'}}>Page {pi+1} of {customPages.length}</p>
-                <div style={{width:`${custom.pageW*96*scale}px`,height:`${custom.pageH*96*scale}px`,position:'relative',flexShrink:0}}>
-                  <div style={{position:'absolute',top:0,left:0,transformOrigin:'top left',transform:`scale(${scale})`}}>
-                    <div style={{width:`${custom.pageW}in`,height:`${custom.pageH}in`,backgroundColor:'white',padding:`${custom.marginV}in ${custom.marginH}in`,boxSizing:'border-box',boxShadow:'0 8px 40px rgba(0,0,0,0.5)',display:'grid',gridTemplateColumns:`repeat(${custom.cols},${cLw}in)`,gridTemplateRows:`repeat(${custom.rows},${cLh}in)`,gap:`${custom.gap}in`}}>
-                      {pg.map(bin=><LabelCard key={bin.id} bin={bin} w={cLw} h={cLh} layout={pickLayout(cLw,cLh)} cut={cut}/>)}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
+            {mode==='wideformat'&&wideSize.overflow&&<p style={{color:'#f87171',fontSize:13}}>Too many labels across for this sheet width — reduce the count or gap.</p>}
           </div>
         </div>
       )}
